@@ -1,0 +1,68 @@
+[package]
+name = "september"
+version = "0.1.0"
+edition = "2021"
+description = "HTTP to NNTP bridge server using Leptos"
+license = "Apache-2.0"
+repository = "https://github.com/forever-august/september"
+
+[dependencies]
+# Web framework
+leptos = { version = "0.6", features = ["ssr"] }
+leptos_axum = { version = "0.6" }
+leptos_meta = { version = "0.6", features = ["ssr"] }
+leptos_router = { version = "0.6", features = ["ssr"] }
+
+# HTTP server
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+
+# NNTP client functionality
+nntp = "0.0.5"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = 'z'
+lto = true
+codegen-units = 1
+panic = "abort"
+
+# The name used by wasm-pack/trunk for the generated JS/WASM files
+[package.metadata.leptos]
+output-name = "september"
+# The site root folder is where cargo-leptos generate all output. WARNING: all content of this folder will be erased on a rebuild. Use it only for generated content.
+site-root = "target/site"
+# The site-root relative folder where all compiled output (JS, WASM and CSS) is written
+# Defaults to pkg
+site-pkg-dir = "pkg"
+# The IP and port (ex: 127.0.0.1:3000) where the server serves the content. Use it in your server setup.
+site-addr = "127.0.0.1:3000"
+# The port to use for automatic reload monitoring
+reload-port = 3001
+# The environment Leptos will run in, usually either "DEV" or "PROD"
+env = "DEV"
+# The features to use when compiling the bin target
+#
+# Optional. Can be over-ridden with the command line parameter --bin-features
+bin-features = ["ssr"]
+
+# The features to use when compiling the lib target
+#
+# Optional. Can be over-ridden with the command line parameter --lib-features
+lib-features = ["hydrate"]
+
+
