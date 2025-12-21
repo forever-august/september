@@ -109,7 +109,101 @@ fn timeago_filter(
     }
 }
 
-/// Truncate text to a preview of N lines
+/// Check if a line is a quote line (starts with >) or a quote attribution line
+/// (e.g., "On Thu, 30 Oct 2025, John Smith wrote:")
+fn is_quote_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    
+    // Lines starting with > are block quotes
+    if trimmed.starts_with('>') {
+        return true;
+    }
+    
+    // Check for quote attribution lines like "On <date>, <name> wrote:"
+    if trimmed.starts_with("On ") && trimmed.ends_with(':') {
+        // Look for common patterns: "wrote:", "writes:", "said:", "says:"
+        let lower = trimmed.to_lowercase();
+        if lower.ends_with(" wrote:")
+            || lower.ends_with(" writes:")
+            || lower.ends_with(" said:")
+            || lower.ends_with(" says:")
+        {
+            return true;
+        }
+    }
+    
+    false
+}
+
+/// Strip block quotes (lines starting with >) from beginning and end of text.
+/// Also strips quote attribution lines and adjacent empty lines.
+fn strip_block_quotes(s: &str) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+
+    // Find first non-quote line, skipping empty lines adjacent to quotes
+    let mut start = 0;
+    while start < lines.len() {
+        let line = lines[start];
+        if is_quote_line(line) || line.trim().is_empty() {
+            // Skip quote lines and empty lines at the start
+            // But for empty lines, only skip if they're followed by quote lines OR
+            // we haven't seen any content yet (still at start)
+            if line.trim().is_empty() {
+                // Check if this empty line is followed by quote lines
+                let next_non_empty = lines[start + 1..].iter().position(|l| !l.trim().is_empty());
+                match next_non_empty {
+                    Some(offset) if is_quote_line(lines[start + 1 + offset]) => start += 1,
+                    None => start += 1, // All remaining lines are empty
+                    _ => break, // Next non-empty line is content, stop here but we'll trim below
+                }
+            } else {
+                start += 1;
+            }
+        } else {
+            break;
+        }
+    }
+    
+    // Skip any remaining empty lines at the start
+    while start < lines.len() && lines[start].trim().is_empty() {
+        start += 1;
+    }
+
+    // Find last non-quote line, skipping empty lines adjacent to quotes
+    let mut end = lines.len();
+    while end > start {
+        let line = lines[end - 1];
+        if is_quote_line(line) || line.trim().is_empty() {
+            if line.trim().is_empty() {
+                // Check if this empty line is preceded by quote lines
+                let prev_non_empty = lines[..end - 1].iter().rposition(|l| !l.trim().is_empty());
+                match prev_non_empty {
+                    Some(idx) if is_quote_line(lines[idx]) => end -= 1,
+                    None => end -= 1, // All preceding lines are empty
+                    _ => break, // Previous non-empty line is content, stop here but we'll trim below
+                }
+            } else {
+                end -= 1;
+            }
+        } else {
+            break;
+        }
+    }
+    
+    // Skip any remaining empty lines at the end
+    while end > start && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+
+    if start >= end {
+        return String::new();
+    }
+
+    lines[start..end].join("\n")
+}
+
+/// Truncate text to a preview of N lines, stopping at next line break if over,
+/// with a hard limit of 1024 characters. Block quotes are stripped first.
 fn preview_filter(
     value: &tera::Value,
     args: &std::collections::HashMap<String, tera::Value>,
@@ -123,16 +217,54 @@ fn preview_filter(
         .and_then(|v| v.as_u64())
         .unwrap_or(10) as usize;
 
-    let lines: Vec<&str> = s.lines().collect();
+    const HARD_LIMIT: usize = 1024;
+
+    // Strip block quotes first
+    let stripped = strip_block_quotes(s);
+
+    let lines: Vec<&str> = stripped.lines().collect();
     if lines.len() <= max_lines {
-        Ok(tera::Value::String(s.to_string()))
-    } else {
-        let truncated = lines[..max_lines].join("\n");
-        Ok(tera::Value::String(truncated))
+        // Under line limit, but still enforce hard character limit
+        if stripped.len() <= HARD_LIMIT {
+            return Ok(tera::Value::String(stripped));
+        }
+        // Find next line break after hard limit
+        if let Some(pos) = stripped[HARD_LIMIT..].find('\n') {
+            return Ok(tera::Value::String(stripped[..HARD_LIMIT + pos].to_string()));
+        }
+        return Ok(tera::Value::String(stripped[..HARD_LIMIT].to_string()));
     }
+
+    // Over line limit: take max_lines, then continue to next line break
+    let mut result = lines[..max_lines].join("\n");
+
+    // If there are more lines, extend to the next blank line or paragraph break
+    if lines.len() > max_lines {
+        // Find the next line break (empty line or end of content)
+        for line in &lines[max_lines..] {
+            if line.trim().is_empty() {
+                break;
+            }
+            result.push('\n');
+            result.push_str(line);
+            // Check hard limit
+            if result.len() >= HARD_LIMIT {
+                result.truncate(HARD_LIMIT);
+                break;
+            }
+        }
+    }
+
+    // Final hard limit check
+    if result.len() > HARD_LIMIT {
+        result.truncate(HARD_LIMIT);
+    }
+
+    Ok(tera::Value::String(result))
 }
 
-/// Check if text has more than N lines (for showing "read more" button)
+/// Check if text has more than N lines after stripping block quotes,
+/// or exceeds 1024 characters (for showing "read more" button)
 fn has_more_lines_filter(
     value: &tera::Value,
     args: &std::collections::HashMap<String, tera::Value>,
@@ -146,6 +278,91 @@ fn has_more_lines_filter(
         .and_then(|v| v.as_u64())
         .unwrap_or(10) as usize;
 
-    let line_count = s.lines().count();
-    Ok(tera::Value::Bool(line_count > max_lines))
+    const HARD_LIMIT: usize = 1024;
+
+    // Strip block quotes first (same as preview_filter)
+    let stripped = strip_block_quotes(s);
+
+    let line_count = stripped.lines().count();
+    Ok(tera::Value::Bool(line_count > max_lines || stripped.len() > HARD_LIMIT))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_block_quotes_simple() {
+        let input = "> quoted line\nActual content";
+        assert_eq!(strip_block_quotes(input), "Actual content");
+    }
+
+    #[test]
+    fn test_strip_block_quotes_without_attribution() {
+        // Block quote at start without attribution line
+        let input = "> Hello,\n> This is quoted.\n\nActual content here.";
+        assert_eq!(strip_block_quotes(input), "Actual content here.");
+    }
+
+    #[test]
+    fn test_strip_block_quotes_with_attribution_no_whitespace() {
+        // Attribution line directly followed by block quote (no empty line)
+        let input = "On Wed, 29 Oct 2025, John Smith wrote:\n> Hello,\n> Quoted text.\n\nActual content.";
+        assert_eq!(strip_block_quotes(input), "Actual content.");
+    }
+
+    #[test]
+    fn test_strip_block_quotes_with_attribution_and_whitespace() {
+        // Attribution line followed by empty line then block quote
+        let input = "On Wed, 29 Oct 2025, John Smith wrote:\n\n> Hello,\n> Quoted text.\n\nActual content.";
+        assert_eq!(strip_block_quotes(input), "Actual content.");
+    }
+
+    #[test]
+    fn test_strip_block_quotes_at_end() {
+        let input = "Actual content.\n\n> Quoted at end.";
+        assert_eq!(strip_block_quotes(input), "Actual content.");
+    }
+
+    #[test]
+    fn test_strip_block_quotes_at_both_ends() {
+        let input = "> Quoted at start.\n\nActual content.\n\n> Quoted at end.";
+        assert_eq!(strip_block_quotes(input), "Actual content.");
+    }
+
+    #[test]
+    fn test_strip_block_quotes_preserves_middle() {
+        // Quotes in the middle of content are preserved
+        let input = "Start content.\n\n> Quoted in middle.\n\nEnd content.";
+        assert_eq!(strip_block_quotes(input), "Start content.\n\n> Quoted in middle.\n\nEnd content.");
+    }
+
+    #[test]
+    fn test_strip_block_quotes_all_quotes() {
+        // When everything is quoted, result is empty
+        let input = "> Only quotes\n> Nothing else";
+        assert_eq!(strip_block_quotes(input), "");
+    }
+
+    #[test]
+    fn test_is_quote_line_block_quote() {
+        assert!(is_quote_line("> quoted"));
+        assert!(is_quote_line("  > indented quote"));
+        assert!(is_quote_line(">"));
+    }
+
+    #[test]
+    fn test_is_quote_line_attribution() {
+        assert!(is_quote_line("On Wed, 29 Oct 2025, John Smith wrote:"));
+        assert!(is_quote_line("On Thu, 30 Oct 2025, Someone writes:"));
+        assert!(is_quote_line("On Mon, 1 Jan 2024, Person said:"));
+        assert!(is_quote_line("On Tue, 2 Feb 2024, Another says:"));
+    }
+
+    #[test]
+    fn test_is_quote_line_not_quote() {
+        assert!(!is_quote_line("Normal text"));
+        assert!(!is_quote_line("On vacation"));
+        assert!(!is_quote_line("Something wrote something"));
+    }
 }
