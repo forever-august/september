@@ -2,21 +2,26 @@
 //!
 //! Each worker maintains its own NNTP connection and processes requests
 //! from a shared async_channel queue.
+//!
+//! Connection strategy:
+//! - Try TLS first for all connections
+//! - If credentials are configured, TLS is required (no fallback)
+//! - If no credentials, fall back to plain TCP if TLS fails
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
 
 use async_channel::Receiver;
-use nntp_rs::runtime::tokio::NntpClient;
+use nntp_rs::net_client::NntpClient;
 use nntp_rs::threading::NntpClientThreadingExt;
 use nntp_rs::ListVariant;
 use tokio::time::timeout;
 
-use crate::config::NntpConfig;
-
-use std::collections::HashMap;
+use crate::config::{NntpServerConfig, NntpSettings};
 
 use super::messages::{NntpError, NntpRequest, NntpResponse};
+use super::tls::NntpStream;
 use super::{threads_to_views, ArticleView, GroupView};
 
 /// Server capabilities parsed from CAPABILITIES command
@@ -90,32 +95,49 @@ impl ServerCapabilities {
 /// Worker that processes NNTP requests from a shared queue
 pub struct NntpWorker {
     id: usize,
-    config: NntpConfig,
+    server_name: String,
+    server_config: NntpServerConfig,
+    global_settings: NntpSettings,
     requests: Receiver<NntpRequest>,
 }
 
 impl NntpWorker {
     /// Create a new worker
-    pub fn new(id: usize, config: NntpConfig, requests: Receiver<NntpRequest>) -> Self {
+    pub fn new(
+        id: usize,
+        server_config: NntpServerConfig,
+        global_settings: NntpSettings,
+        requests: Receiver<NntpRequest>,
+    ) -> Self {
         Self {
             id,
-            config,
+            server_name: server_config.name.clone(),
+            server_config,
+            global_settings,
             requests,
         }
     }
 
     /// Run the worker loop - connects to NNTP and processes requests
     pub async fn run(self) {
-        tracing::info!(worker = self.id, "NNTP worker starting");
+        tracing::info!(worker = self.id, server = %self.server_name, "NNTP worker starting");
 
         loop {
             // Connect/reconnect to NNTP server
-            let addr = format!("{}:{}", self.config.server, self.config.port);
-            let connect_timeout = Duration::from_secs(self.config.timeout_seconds);
+            let addr = format!("{}:{}", self.server_config.host, self.server_config.port);
+            let connect_timeout = Duration::from_secs(
+                self.server_config.timeout_seconds(&self.global_settings)
+            );
+            let has_credentials = self.server_config.has_credentials();
 
-            let mut client = match timeout(connect_timeout, NntpClient::connect(&addr)).await {
+            // Set TLS requirement flag (credentials require TLS)
+            super::tls::set_tls_required(has_credentials);
+
+            // Connect using NntpClient with our TLS-aware NntpStream
+            let mut client = match timeout(connect_timeout, NntpClient::<NntpStream>::connect(&addr)).await {
                 Ok(Ok(client)) => {
-                    tracing::info!(worker = self.id, server = %addr, "Connected to NNTP server");
+                    let tls_status = if super::tls::last_connection_was_tls() { "TLS" } else { "plain TCP" };
+                    tracing::info!(worker = self.id, server = %addr, tls = %tls_status, "Connected to NNTP server");
                     client
                 }
                 Ok(Err(e)) => {
@@ -129,6 +151,24 @@ impl NntpWorker {
                     continue;
                 }
             };
+
+            // Authenticate if credentials are configured
+            // (safe because credentials require TLS, which was enforced during connect)
+            if has_credentials {
+                let username = self.server_config.username.as_ref().unwrap();
+                let password = self.server_config.password.as_ref().unwrap();
+
+                match client.authenticate(username, password).await {
+                    Ok(()) => {
+                        tracing::info!(worker = self.id, "Authenticated successfully");
+                    }
+                    Err(e) => {
+                        tracing::error!(worker = self.id, error = %e, "Authentication failed");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                }
+            }
 
             // Query server capabilities to determine supported commands
             let capabilities = match client.capabilities().await {
@@ -180,7 +220,7 @@ impl NntpWorker {
     /// Handle a single request
     async fn handle_request(
         &self,
-        client: &mut NntpClient,
+        client: &mut NntpClient<NntpStream>,
         request: &NntpRequest,
         capabilities: &ServerCapabilities,
     ) -> Result<NntpResponse, NntpError> {

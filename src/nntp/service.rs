@@ -1,91 +1,69 @@
-//! NNTP Service with caching and request coalescing
+//! NNTP Service for a single server
 //!
-//! Provides a high-level API for NNTP operations with:
-//! - Local caching using moka
-//! - Request coalescing for concurrent identical requests
-//! - Worker pool for parallel NNTP connections
+//! Provides communication with a single NNTP server through a worker pool.
+//! Request coalescing prevents duplicate requests for the same resource.
+//! Caching is handled at the federated service level.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, Sender};
-use moka::future::Cache;
 use tokio::sync::{broadcast, oneshot, Mutex};
 
-use crate::config::AppConfig;
-use crate::error::AppError;
+use crate::config::{NntpServerConfig, NntpSettings};
 
 use super::messages::{NntpError, NntpRequest};
 use super::worker::NntpWorker;
 use super::{ArticleView, GroupView, ThreadView};
 
+/// Pending request with timestamp for timeout checking
+type PendingEntry<T> = (broadcast::Sender<Result<T, NntpError>>, Instant);
+
 /// Pending request tracking for coalescing
 struct PendingRequests {
-    articles: Mutex<HashMap<String, broadcast::Sender<Result<ArticleView, NntpError>>>>,
-    threads: Mutex<HashMap<String, broadcast::Sender<Result<Vec<ThreadView>, NntpError>>>>,
-    thread: Mutex<HashMap<String, broadcast::Sender<Result<ThreadView, NntpError>>>>,
-    groups: Mutex<Option<broadcast::Sender<Result<Vec<GroupView>, NntpError>>>>,
+    articles: Mutex<HashMap<String, PendingEntry<ArticleView>>>,
+    threads: Mutex<HashMap<String, PendingEntry<Vec<ThreadView>>>>,
+    thread: Mutex<HashMap<String, PendingEntry<ThreadView>>>,
+    groups: Mutex<Option<PendingEntry<Vec<GroupView>>>>,
 }
 
-/// NNTP Service with caching and request coalescing
+/// NNTP Service for a single server with request coalescing
 #[derive(Clone)]
 pub struct NntpService {
+    /// Server name for logging
+    name: String,
     /// Request queue sender - workers pull from the receiver
     request_tx: Sender<NntpRequest>,
     /// Request queue receiver - cloned for each worker
     request_rx: Receiver<NntpRequest>,
-    /// Configuration for spawning workers
-    config: Arc<AppConfig>,
-
-    /// Cache for individual articles
-    article_cache: Cache<String, ArticleView>,
-    /// Cache for thread lists (key: "group:count")
-    threads_cache: Cache<String, Vec<ThreadView>>,
-    /// Cache for single threads (key: "group:message_id")
-    thread_cache: Cache<String, ThreadView>,
-    /// Cache for group list
-    groups_cache: Cache<String, Vec<GroupView>>,
-
+    /// Server configuration
+    server_config: Arc<NntpServerConfig>,
+    /// Global NNTP settings
+    global_settings: Arc<NntpSettings>,
+    /// Request timeout duration
+    request_timeout: Duration,
     /// Pending requests for coalescing
     pending: Arc<PendingRequests>,
 }
 
 impl NntpService {
-    /// Create a new NNTP service
-    pub fn new(config: &AppConfig) -> Self {
+    /// Create a new NNTP service for a single server
+    pub fn new(server_config: NntpServerConfig, global_settings: NntpSettings) -> Self {
         // Create the request channel with backpressure
         let (tx, rx) = async_channel::bounded(100);
 
-        // Build caches with TTL and size limits
-        let article_cache = Cache::builder()
-            .max_capacity(config.cache.max_articles)
-            .time_to_live(Duration::from_secs(config.cache.article_ttl_seconds))
-            .build();
-
-        let threads_cache = Cache::builder()
-            .max_capacity(config.cache.max_thread_lists)
-            .time_to_live(Duration::from_secs(config.cache.threads_ttl_seconds))
-            .build();
-
-        let thread_cache = Cache::builder()
-            .max_capacity(config.cache.max_thread_lists * 10) // More individual threads than lists
-            .time_to_live(Duration::from_secs(config.cache.threads_ttl_seconds))
-            .build();
-
-        let groups_cache = Cache::builder()
-            .max_capacity(1) // Only one groups list
-            .time_to_live(Duration::from_secs(config.cache.groups_ttl_seconds))
-            .build();
+        let request_timeout = Duration::from_secs(
+            server_config.request_timeout_seconds(&global_settings)
+        );
 
         Self {
+            name: server_config.name.clone(),
             request_tx: tx,
             request_rx: rx,
-            config: Arc::new(config.clone()),
-            article_cache,
-            threads_cache,
-            thread_cache,
-            groups_cache,
+            server_config: Arc::new(server_config),
+            global_settings: Arc::new(global_settings),
+            request_timeout,
             pending: Arc::new(PendingRequests {
                 articles: Mutex::new(HashMap::new()),
                 threads: Mutex::new(HashMap::new()),
@@ -95,42 +73,51 @@ impl NntpService {
         }
     }
 
-    /// Spawn worker tasks
-    ///
-    /// Call this after creating the service to start the worker pool.
-    pub fn spawn_workers(&self, count: usize) {
+    /// Get the server name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Spawn worker tasks for this server
+    pub fn spawn_workers(&self) {
+        let count = self.server_config.worker_count();
         for id in 0..count {
-            let worker = NntpWorker::new(id, self.config.nntp.clone(), self.request_rx.clone());
+            let worker = NntpWorker::new(
+                id,
+                (*self.server_config).clone(),
+                (*self.global_settings).clone(),
+                self.request_rx.clone(),
+            );
             tokio::spawn(worker.run());
         }
-        tracing::info!(count, "Spawned NNTP workers");
+        tracing::info!(server = %self.name, count, "Spawned NNTP workers");
     }
 
     /// Fetch an article by message ID
-    pub async fn get_article(&self, message_id: &str) -> Result<ArticleView, AppError> {
-        // 1. Check cache
-        if let Some(article) = self.article_cache.get(message_id).await {
-            tracing::debug!(%message_id, "Article cache hit");
-            return Ok(article);
-        }
-
-        // 2. Check for pending request (coalesce)
+    pub async fn get_article(&self, message_id: &str) -> Result<ArticleView, NntpError> {
+        // Check for pending request (coalesce if not timed out)
         let mut pending = self.pending.articles.lock().await;
-        if let Some(tx) = pending.get(message_id) {
-            let mut rx = tx.subscribe();
-            drop(pending); // Release lock while waiting
+        if let Some((tx, started_at)) = pending.get(message_id) {
+            if started_at.elapsed() < self.request_timeout {
+                let mut rx = tx.subscribe();
+                drop(pending); // Release lock while waiting
 
-            tracing::debug!(%message_id, "Coalescing with pending article request");
-            return rx
-                .recv()
-                .await
-                .map_err(|_| AppError::Internal("Broadcast channel closed".into()))?
-                .map_err(|e| AppError::Internal(e.0));
+                tracing::debug!(server = %self.name, %message_id, "Coalescing with pending article request");
+                return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
+                    Err(_) => Err(NntpError("Request timeout".into())),
+                };
+            } else {
+                // Pending request timed out, remove it and start fresh
+                tracing::debug!(server = %self.name, %message_id, "Pending request timed out, starting new request");
+                pending.remove(message_id);
+            }
         }
 
-        // 3. Register pending request and send to worker
+        // Register pending request and send to worker
         let (tx, _) = broadcast::channel(16);
-        pending.insert(message_id.to_string(), tx.clone());
+        pending.insert(message_id.to_string(), (tx.clone(), Instant::now()));
         drop(pending);
 
         let (resp_tx, resp_rx) = oneshot::channel();
@@ -140,54 +127,56 @@ impl NntpService {
                 response: resp_tx,
             })
             .await
-            .map_err(|_| AppError::Internal("Worker pool closed".into()))?;
+            .map_err(|_| NntpError("Worker pool closed".into()))?;
 
-        // 4. Wait for result
-        let result = resp_rx
-            .await
-            .map_err(|_| AppError::Internal("Worker dropped request".into()))?;
+        // Wait for result with timeout
+        let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                self.pending.articles.lock().await.remove(message_id);
+                return Err(NntpError("Worker dropped request".into()));
+            }
+            Err(_) => {
+                self.pending.articles.lock().await.remove(message_id);
+                return Err(NntpError("Request timeout".into()));
+            }
+        };
 
-        // 5. Cache on success and broadcast to waiters
-        if let Ok(ref article) = result {
-            self.article_cache
-                .insert(message_id.to_string(), article.clone())
-                .await;
-        }
+        // Broadcast to waiters
         let _ = tx.send(result.clone());
 
-        // 6. Cleanup pending
+        // Cleanup pending
         self.pending.articles.lock().await.remove(message_id);
 
-        result.map_err(|e| AppError::Internal(e.0))
+        result
     }
 
     /// Fetch recent threads from a newsgroup
-    pub async fn get_threads(&self, group: &str, count: u64) -> Result<Vec<ThreadView>, AppError> {
+    pub async fn get_threads(&self, group: &str, count: u64) -> Result<Vec<ThreadView>, NntpError> {
         let cache_key = format!("{}:{}", group, count);
 
-        // 1. Check cache
-        if let Some(threads) = self.threads_cache.get(&cache_key).await {
-            tracing::debug!(%group, %count, "Threads cache hit");
-            return Ok(threads);
-        }
-
-        // 2. Check for pending request (coalesce)
+        // Check for pending request (coalesce if not timed out)
         let mut pending = self.pending.threads.lock().await;
-        if let Some(tx) = pending.get(&cache_key) {
-            let mut rx = tx.subscribe();
-            drop(pending);
+        if let Some((tx, started_at)) = pending.get(&cache_key) {
+            if started_at.elapsed() < self.request_timeout {
+                let mut rx = tx.subscribe();
+                drop(pending);
 
-            tracing::debug!(%group, %count, "Coalescing with pending threads request");
-            return rx
-                .recv()
-                .await
-                .map_err(|_| AppError::Internal("Broadcast channel closed".into()))?
-                .map_err(|e| AppError::Internal(e.0));
+                tracing::debug!(server = %self.name, %group, %count, "Coalescing with pending threads request");
+                return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
+                    Err(_) => Err(NntpError("Request timeout".into())),
+                };
+            } else {
+                tracing::debug!(server = %self.name, %group, %count, "Pending request timed out, starting new request");
+                pending.remove(&cache_key);
+            }
         }
 
-        // 3. Register pending request and send to worker
+        // Register pending request and send to worker
         let (tx, _) = broadcast::channel(16);
-        pending.insert(cache_key.clone(), tx.clone());
+        pending.insert(cache_key.clone(), (tx.clone(), Instant::now()));
         drop(pending);
 
         let (resp_tx, resp_rx) = oneshot::channel();
@@ -198,52 +187,56 @@ impl NntpService {
                 response: resp_tx,
             })
             .await
-            .map_err(|_| AppError::Internal("Worker pool closed".into()))?;
+            .map_err(|_| NntpError("Worker pool closed".into()))?;
 
-        // 4. Wait for result
-        let result = resp_rx
-            .await
-            .map_err(|_| AppError::Internal("Worker dropped request".into()))?;
+        // Wait for result with timeout
+        let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                self.pending.threads.lock().await.remove(&cache_key);
+                return Err(NntpError("Worker dropped request".into()));
+            }
+            Err(_) => {
+                self.pending.threads.lock().await.remove(&cache_key);
+                return Err(NntpError("Request timeout".into()));
+            }
+        };
 
-        // 5. Cache on success and broadcast to waiters
-        if let Ok(ref threads) = result {
-            self.threads_cache.insert(cache_key.clone(), threads.clone()).await;
-        }
+        // Broadcast to waiters
         let _ = tx.send(result.clone());
 
-        // 6. Cleanup pending
+        // Cleanup pending
         self.pending.threads.lock().await.remove(&cache_key);
 
-        result.map_err(|e| AppError::Internal(e.0))
+        result
     }
 
     /// Fetch a single thread by group and root message ID
-    pub async fn get_thread(&self, group: &str, message_id: &str) -> Result<ThreadView, AppError> {
+    pub async fn get_thread(&self, group: &str, message_id: &str) -> Result<ThreadView, NntpError> {
         let cache_key = format!("{}:{}", group, message_id);
 
-        // 1. Check cache
-        if let Some(thread) = self.thread_cache.get(&cache_key).await {
-            tracing::debug!(%group, %message_id, "Thread cache hit");
-            return Ok(thread);
-        }
-
-        // 2. Check for pending request (coalesce)
+        // Check for pending request (coalesce if not timed out)
         let mut pending = self.pending.thread.lock().await;
-        if let Some(tx) = pending.get(&cache_key) {
-            let mut rx = tx.subscribe();
-            drop(pending);
+        if let Some((tx, started_at)) = pending.get(&cache_key) {
+            if started_at.elapsed() < self.request_timeout {
+                let mut rx = tx.subscribe();
+                drop(pending);
 
-            tracing::debug!(%group, %message_id, "Coalescing with pending thread request");
-            return rx
-                .recv()
-                .await
-                .map_err(|_| AppError::Internal("Broadcast channel closed".into()))?
-                .map_err(|e| AppError::Internal(e.0));
+                tracing::debug!(server = %self.name, %group, %message_id, "Coalescing with pending thread request");
+                return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
+                    Err(_) => Err(NntpError("Request timeout".into())),
+                };
+            } else {
+                tracing::debug!(server = %self.name, %group, %message_id, "Pending request timed out, starting new request");
+                pending.remove(&cache_key);
+            }
         }
 
-        // 3. Register pending request and send to worker
+        // Register pending request and send to worker
         let (tx, _) = broadcast::channel(16);
-        pending.insert(cache_key.clone(), tx.clone());
+        pending.insert(cache_key.clone(), (tx.clone(), Instant::now()));
         drop(pending);
 
         let (resp_tx, resp_rx) = oneshot::channel();
@@ -254,82 +247,81 @@ impl NntpService {
                 response: resp_tx,
             })
             .await
-            .map_err(|_| AppError::Internal("Worker pool closed".into()))?;
+            .map_err(|_| NntpError("Worker pool closed".into()))?;
 
-        // 4. Wait for result
-        let result = resp_rx
-            .await
-            .map_err(|_| AppError::Internal("Worker dropped request".into()))?;
+        // Wait for result with timeout
+        let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                self.pending.thread.lock().await.remove(&cache_key);
+                return Err(NntpError("Worker dropped request".into()));
+            }
+            Err(_) => {
+                self.pending.thread.lock().await.remove(&cache_key);
+                return Err(NntpError("Request timeout".into()));
+            }
+        };
 
-        // 5. Cache on success and broadcast to waiters
-        if let Ok(ref thread) = result {
-            self.thread_cache.insert(cache_key.clone(), thread.clone()).await;
-        }
+        // Broadcast to waiters
         let _ = tx.send(result.clone());
 
-        // 6. Cleanup pending
+        // Cleanup pending
         self.pending.thread.lock().await.remove(&cache_key);
 
-        result.map_err(|e| AppError::Internal(e.0))
+        result
     }
 
     /// Fetch the list of available newsgroups
-    pub async fn get_groups(&self) -> Result<Vec<GroupView>, AppError> {
-        let cache_key = "groups".to_string();
-
-        // 1. Check cache
-        if let Some(groups) = self.groups_cache.get(&cache_key).await {
-            tracing::debug!("Groups cache hit");
-            return Ok(groups);
-        }
-
-        // 2. Check for pending request (coalesce)
+    pub async fn get_groups(&self) -> Result<Vec<GroupView>, NntpError> {
+        // Check for pending request (coalesce if not timed out)
         let mut pending = self.pending.groups.lock().await;
-        if let Some(tx) = pending.as_ref() {
-            let mut rx = tx.subscribe();
-            drop(pending);
+        if let Some((tx, started_at)) = pending.as_ref() {
+            if started_at.elapsed() < self.request_timeout {
+                let mut rx = tx.subscribe();
+                drop(pending);
 
-            tracing::debug!("Coalescing with pending groups request");
-            return rx
-                .recv()
-                .await
-                .map_err(|_| AppError::Internal("Broadcast channel closed".into()))?
-                .map_err(|e| AppError::Internal(e.0));
+                tracing::debug!(server = %self.name, "Coalescing with pending groups request");
+                return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
+                    Err(_) => Err(NntpError("Request timeout".into())),
+                };
+            } else {
+                tracing::debug!(server = %self.name, "Pending groups request timed out, starting new request");
+                *pending = None;
+            }
         }
 
-        // 3. Register pending request and send to worker
+        // Register pending request and send to worker
         let (tx, _) = broadcast::channel(16);
-        *pending = Some(tx.clone());
+        *pending = Some((tx.clone(), Instant::now()));
         drop(pending);
 
         let (resp_tx, resp_rx) = oneshot::channel();
         self.request_tx
             .send(NntpRequest::GetGroups { response: resp_tx })
             .await
-            .map_err(|_| AppError::Internal("Worker pool closed".into()))?;
+            .map_err(|_| NntpError("Worker pool closed".into()))?;
 
-        // 4. Wait for result
-        let result = resp_rx
-            .await
-            .map_err(|_| AppError::Internal("Worker dropped request".into()))?;
+        // Wait for result with timeout
+        let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                *self.pending.groups.lock().await = None;
+                return Err(NntpError("Worker dropped request".into()));
+            }
+            Err(_) => {
+                *self.pending.groups.lock().await = None;
+                return Err(NntpError("Request timeout".into()));
+            }
+        };
 
-        // 5. Cache on success and broadcast to waiters
-        if let Ok(ref groups) = result {
-            self.groups_cache.insert(cache_key, groups.clone()).await;
-        }
+        // Broadcast to waiters
         let _ = tx.send(result.clone());
 
-        // 6. Cleanup pending
+        // Cleanup pending
         *self.pending.groups.lock().await = None;
 
-        result.map_err(|e| AppError::Internal(e.0))
-    }
-
-    /// Invalidate all cached data (useful for testing or admin operations)
-    pub fn invalidate_all(&self) {
-        self.article_cache.invalidate_all();
-        self.threads_cache.invalidate_all();
-        self.thread_cache.invalidate_all();
-        self.groups_cache.invalidate_all();
+        result
     }
 }
