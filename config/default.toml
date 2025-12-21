@@ -1,21 +1,32 @@
-[server]
+# HTTP server configuration
+[http]
 host = "127.0.0.1"
 port = 3000
 
+# Global NNTP settings
 [nntp]
-#server = "nntp.lore.kernel.org"
-#port = 119
-server = "olduse.net"
-port = 11940
 timeout_seconds = 30
-worker_count = 4
+request_timeout_seconds = 30
 
 [nntp.defaults]
-default_group = "org.kernel.vger.linux-kernel"
 threads_per_page = 25
 
+# NNTP servers (federated pool - tried in order)
+#[[server]]
+#name = "olduse"
+#host = "olduse.net"
+#port = 11940
+#worker_count = 4
+
+# Uncomment to add additional servers for fallback
+[[server]]
+name = "lore"
+host = "nntp.lore.kernel.org"
+port = 119
+worker_count = 2
+
 [ui]
-# site_name defaults to the NNTP server name if not set
+# site_name defaults to the first server name if not set
 collapse_threshold = 5
 
 [cache]

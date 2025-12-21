@@ -3,32 +3,121 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
-    pub server: ServerConfig,
-    pub nntp: NntpConfig,
+    /// HTTP server configuration
+    pub http: HttpServerConfig,
+    /// Global NNTP settings and defaults
+    pub nntp: NntpSettings,
+    /// NNTP servers (federated pool)
+    #[serde(default)]
+    pub server: Vec<NntpServerConfig>,
     pub ui: UiConfig,
     #[serde(default)]
     pub cache: CacheConfig,
 }
 
+/// HTTP server configuration
 #[derive(Debug, Clone, Deserialize)]
-pub struct ServerConfig {
+pub struct HttpServerConfig {
     pub host: String,
     pub port: u16,
 }
 
+/// Global NNTP settings that apply to all servers unless overridden
 #[derive(Debug, Clone, Deserialize)]
-pub struct NntpConfig {
-    pub server: String,
-    pub port: u16,
+pub struct NntpSettings {
+    /// Connection timeout in seconds (can be overridden per-server)
+    #[serde(default = "NntpSettings::default_timeout")]
     pub timeout_seconds: u64,
+    /// Request timeout in seconds (can be overridden per-server)
+    #[serde(default = "NntpSettings::default_request_timeout")]
+    pub request_timeout_seconds: u64,
+    /// Default newsgroup and display settings
     pub defaults: NntpDefaults,
-    /// Number of NNTP worker clients (defaults to 4)
+
+    // Legacy fields for backward compatibility (used if no [[server]] sections)
+    #[serde(rename = "server")]
+    legacy_server: Option<String>,
+    #[serde(rename = "port")]
+    legacy_port: Option<u16>,
+    legacy_worker_count: Option<usize>,
+    #[serde(rename = "username")]
+    legacy_username: Option<String>,
+    #[serde(rename = "password")]
+    legacy_password: Option<String>,
+}
+
+impl NntpSettings {
+    fn default_timeout() -> u64 {
+        30
+    }
+
+    fn default_request_timeout() -> u64 {
+        30
+    }
+}
+
+/// Configuration for a single NNTP server
+#[derive(Debug, Clone, Deserialize)]
+pub struct NntpServerConfig {
+    /// Server name (used for logging and identification)
+    pub name: String,
+    /// NNTP server hostname
+    pub host: String,
+    /// NNTP server port
+    pub port: u16,
+    /// Connection timeout (overrides global setting)
+    pub timeout_seconds: Option<u64>,
+    /// Request timeout (overrides global setting)
+    pub request_timeout_seconds: Option<u64>,
+    /// Number of worker connections for this server (default: 4)
     pub worker_count: Option<usize>,
+    /// Username for NNTP authentication (requires TLS)
+    pub username: Option<String>,
+    /// Password for NNTP authentication (requires TLS)
+    pub password: Option<String>,
+}
+
+impl NntpServerConfig {
+    /// Get effective timeout (server-specific or global default)
+    pub fn timeout_seconds(&self, global: &NntpSettings) -> u64 {
+        self.timeout_seconds.unwrap_or(global.timeout_seconds)
+    }
+
+    /// Get effective request timeout (server-specific or global default)
+    pub fn request_timeout_seconds(&self, global: &NntpSettings) -> u64 {
+        self.request_timeout_seconds.unwrap_or(global.request_timeout_seconds)
+    }
+
+    /// Get worker count (default: 4)
+    pub fn worker_count(&self) -> usize {
+        self.worker_count.unwrap_or(4)
+    }
+
+    /// Check if credentials are configured (both username and password)
+    pub fn has_credentials(&self) -> bool {
+        self.username.is_some() && self.password.is_some()
+    }
+
+    /// Create from legacy NntpSettings (backward compatibility)
+    fn from_legacy(settings: &NntpSettings) -> Option<Self> {
+        let server = settings.legacy_server.as_ref()?;
+        let port = settings.legacy_port?;
+
+        Some(Self {
+            name: "default".to_string(),
+            host: server.clone(),
+            port,
+            timeout_seconds: Some(settings.timeout_seconds),
+            request_timeout_seconds: Some(settings.request_timeout_seconds),
+            worker_count: settings.legacy_worker_count,
+            username: settings.legacy_username.clone(),
+            password: settings.legacy_password.clone(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct NntpDefaults {
-    pub default_group: String,
     pub threads_per_page: usize,
 }
 
@@ -100,7 +189,22 @@ impl CacheConfig {
 impl AppConfig {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path)?;
-        let config: AppConfig = toml::from_str(&contents)?;
+        let mut config: AppConfig = toml::from_str(&contents)?;
+
+        // Backward compatibility: if no [[server]] sections, convert legacy [nntp] config
+        if config.server.is_empty() {
+            if let Some(legacy_server) = NntpServerConfig::from_legacy(&config.nntp) {
+                config.server.push(legacy_server);
+            }
+        }
+
+        // Validate: at least one server must be configured
+        if config.server.is_empty() {
+            return Err(ConfigError::Validation(
+                "No NNTP servers configured. Add [[server]] sections or legacy [nntp] server/port".to_string()
+            ));
+        }
+
         Ok(config)
     }
 }
@@ -111,4 +215,6 @@ pub enum ConfigError {
     Io(#[from] std::io::Error),
     #[error("Failed to parse config: {0}")]
     Parse(#[from] toml::de::Error),
+    #[error("Configuration error: {0}")]
+    Validation(String),
 }

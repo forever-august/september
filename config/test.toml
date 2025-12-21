@@ -1,16 +1,22 @@
-[server]
+# HTTP server configuration
+[http]
 host = "127.0.0.1"
 port = 3001
 
+# Global NNTP settings
 [nntp]
-server = "nntp.lore.kernel.org"
-port = 119
 timeout_seconds = 30
-worker_count = 2
+request_timeout_seconds = 30
 
 [nntp.defaults]
-default_group = "org.kernel.vger.linux-kernel"
 threads_per_page = 25
+
+# NNTP servers
+[[server]]
+name = "lore"
+host = "nntp.lore.kernel.org"
+port = 119
+worker_count = 2
 
 [ui]
 site_name = "September Test"
