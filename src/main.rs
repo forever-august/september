@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use config::AppConfig;
-use nntp::NntpService;
+use nntp::NntpFederatedService;
 use routes::create_router;
 use state::AppState;
 use templates::init_templates;
@@ -30,23 +30,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config/default.toml".to_string());
     let mut config = AppConfig::load(&config_path)?;
 
-    // Default site_name to NNTP server if not configured
+    // Default site_name to first server name if not configured
     if config.ui.site_name.is_none() {
-        config.ui.site_name = Some(config.nntp.server.clone());
+        config.ui.site_name = config.server.first().map(|s| s.name.clone());
     }
 
     tracing::info!("Loaded configuration");
-    tracing::info!("NNTP server: {}:{}", config.nntp.server, config.nntp.port);
+
+    // Log configured servers
+    for server in &config.server {
+        tracing::info!(
+            name = %server.name,
+            host = %server.host,
+            port = server.port,
+            workers = server.worker_count(),
+            has_auth = server.has_credentials(),
+            "NNTP server configured"
+        );
+    }
 
     // Initialize Tera templates
     let tera = init_templates()?;
     tracing::info!("Initialized templates");
 
-    // Initialize NNTP service with caching and worker pool
-    let nntp_service = NntpService::new(&config);
-    let worker_count = config.nntp.worker_count.unwrap_or(4);
-    nntp_service.spawn_workers(worker_count);
-    tracing::info!("Initialized NNTP service with {} workers", worker_count);
+    // Initialize federated NNTP service with caching and worker pools
+    let nntp_service = NntpFederatedService::new(&config);
+    nntp_service.spawn_workers();
+    tracing::info!(
+        servers = ?nntp_service.server_names(),
+        "Initialized federated NNTP service"
+    );
 
     // Create application state
     let state = AppState::new(config.clone(), tera, nntp_service);
@@ -55,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = create_router(state);
 
     // Start server
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.server.port));
+    let addr = SocketAddr::from(([127, 0, 0, 1], config.http.port));
     tracing::info!("Starting server at http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
