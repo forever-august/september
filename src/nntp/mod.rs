@@ -1,7 +1,10 @@
+mod federated;
 mod messages;
 mod service;
+mod tls;
 mod worker;
 
+pub use federated::NntpFederatedService;
 pub use service::NntpService;
 
 use nntp_rs::threading::{FetchedArticle, Thread, ThreadCollection, ThreadNode, ThreadedArticleRef};
