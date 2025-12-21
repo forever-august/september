@@ -224,6 +224,7 @@ impl NntpFederatedService {
 
     /// Fetch paginated threads from a newsgroup.
     /// Fetches a larger batch and returns the requested page slice.
+    /// Threads are sorted in reverse-chronological order by last reply date.
     pub async fn get_threads_paginated(
         &self,
         group: &str,
@@ -233,7 +234,24 @@ impl NntpFederatedService {
         // Fetch a larger batch to enable pagination (e.g., 500 threads)
         const MAX_FETCH: u64 = 500;
 
-        let all_threads = self.get_threads(group, MAX_FETCH).await?;
+        let mut all_threads = self.get_threads(group, MAX_FETCH).await?;
+
+        // Sort threads by last_post_date in reverse-chronological order (newest first)
+        // Parse RFC 2822 dates for proper comparison
+        all_threads.sort_by(|a, b| {
+            let a_parsed = a.last_post_date.as_ref()
+                .and_then(|d| chrono::DateTime::parse_from_rfc2822(d).ok());
+            let b_parsed = b.last_post_date.as_ref()
+                .and_then(|d| chrono::DateTime::parse_from_rfc2822(d).ok());
+            
+            match (b_parsed, a_parsed) {
+                (Some(b_dt), Some(a_dt)) => b_dt.cmp(&a_dt),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+
         let total = all_threads.len();
         let pagination = PaginationInfo::new(page, total, per_page);
 
