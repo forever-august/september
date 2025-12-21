@@ -19,6 +19,15 @@ impl std::fmt::Display for NntpError {
 
 impl std::error::Error for NntpError {}
 
+/// Group statistics including last article date
+#[derive(Debug, Clone)]
+pub struct GroupStatsView {
+    /// Number of articles in the group
+    pub article_count: u64,
+    /// Date of the last article (RFC 2822 format)
+    pub last_article_date: Option<String>,
+}
+
 /// Request messages sent to NNTP workers
 pub enum NntpRequest {
     /// Fetch the list of available newsgroups
@@ -41,6 +50,11 @@ pub enum NntpRequest {
     GetArticle {
         message_id: String,
         response: oneshot::Sender<Result<ArticleView, NntpError>>,
+    },
+    /// Fetch group statistics including last article date
+    GetGroupStats {
+        group: String,
+        response: oneshot::Sender<Result<GroupStatsView, NntpError>>,
     },
 }
 
@@ -76,6 +90,13 @@ impl NntpRequest {
                     let _ = response.send(Err(e));
                 }
             }
+            NntpRequest::GetGroupStats { response, .. } => {
+                if let Ok(NntpResponse::GroupStats(stats)) = result {
+                    let _ = response.send(Ok(stats));
+                } else if let Err(e) = result {
+                    let _ = response.send(Err(e));
+                }
+            }
         }
     }
 }
@@ -86,4 +107,5 @@ pub enum NntpResponse {
     Threads(Vec<ThreadView>),
     Thread(ThreadView),
     Article(ArticleView),
+    GroupStats(GroupStatsView),
 }

@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, oneshot, Mutex};
 
 use crate::config::{NntpServerConfig, NntpSettings};
 
-use super::messages::{NntpError, NntpRequest};
+use super::messages::{GroupStatsView, NntpError, NntpRequest};
 use super::worker::NntpWorker;
 use super::{ArticleView, GroupView, ThreadView};
 
@@ -26,6 +26,7 @@ struct PendingRequests {
     threads: Mutex<HashMap<String, PendingEntry<Vec<ThreadView>>>>,
     thread: Mutex<HashMap<String, PendingEntry<ThreadView>>>,
     groups: Mutex<Option<PendingEntry<Vec<GroupView>>>>,
+    group_stats: Mutex<HashMap<String, PendingEntry<GroupStatsView>>>,
 }
 
 /// NNTP Service for a single server with request coalescing
@@ -69,6 +70,7 @@ impl NntpService {
                 threads: Mutex::new(HashMap::new()),
                 thread: Mutex::new(HashMap::new()),
                 groups: Mutex::new(None),
+                group_stats: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -321,6 +323,63 @@ impl NntpService {
 
         // Cleanup pending
         *self.pending.groups.lock().await = None;
+
+        result
+    }
+
+    /// Fetch group statistics (article count and last article date)
+    pub async fn get_group_stats(&self, group: &str) -> Result<GroupStatsView, NntpError> {
+        // Check for pending request (coalesce if not timed out)
+        let mut pending = self.pending.group_stats.lock().await;
+        if let Some((tx, started_at)) = pending.get(group) {
+            if started_at.elapsed() < self.request_timeout {
+                let mut rx = tx.subscribe();
+                drop(pending);
+
+                tracing::debug!(server = %self.name, %group, "Coalescing with pending group stats request");
+                return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
+                    Err(_) => Err(NntpError("Request timeout".into())),
+                };
+            } else {
+                tracing::debug!(server = %self.name, %group, "Pending group stats request timed out, starting new request");
+                pending.remove(group);
+            }
+        }
+
+        // Register pending request and send to worker
+        let (tx, _) = broadcast::channel(16);
+        pending.insert(group.to_string(), (tx.clone(), Instant::now()));
+        drop(pending);
+
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.request_tx
+            .send(NntpRequest::GetGroupStats {
+                group: group.to_string(),
+                response: resp_tx,
+            })
+            .await
+            .map_err(|_| NntpError("Worker pool closed".into()))?;
+
+        // Wait for result with timeout
+        let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                self.pending.group_stats.lock().await.remove(group);
+                return Err(NntpError("Worker dropped request".into()));
+            }
+            Err(_) => {
+                self.pending.group_stats.lock().await.remove(group);
+                return Err(NntpError("Request timeout".into()));
+            }
+        };
+
+        // Broadcast to waiters
+        let _ = tx.send(result.clone());
+
+        // Cleanup pending
+        self.pending.group_stats.lock().await.remove(group);
 
         result
     }

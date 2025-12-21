@@ -10,11 +10,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use moka::future::Cache;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 use crate::config::{AppConfig, CacheConfig};
 use crate::error::AppError;
 
+use super::messages::GroupStatsView;
 use super::service::NntpService;
 use super::{ArticleView, FlatComment, GroupView, PaginationInfo, ThreadView};
 
@@ -32,10 +33,15 @@ pub struct NntpFederatedService {
     thread_cache: Cache<String, ThreadView>,
     /// Cache for group list (merged from all servers)
     groups_cache: Cache<String, Vec<GroupView>>,
+    /// Cache for group stats (article count and last article date)
+    group_stats_cache: Cache<String, GroupStatsView>,
 
     /// Maps group name -> server indices that carry it
     /// Used for smart dispatch of group-specific requests
     group_servers: Arc<RwLock<HashMap<String, Vec<usize>>>>,
+
+    /// Pending group stats requests for coalescing at federated level
+    pending_group_stats: Arc<RwLock<HashMap<String, broadcast::Sender<Result<GroupStatsView, String>>>>>,
 }
 
 impl NntpFederatedService {
@@ -75,13 +81,20 @@ impl NntpFederatedService {
             .time_to_live(Duration::from_secs(cache_config.groups_ttl_seconds))
             .build();
 
+        let group_stats_cache = Cache::builder()
+            .max_capacity(cache_config.max_thread_lists) // One per group
+            .time_to_live(Duration::from_secs(cache_config.threads_ttl_seconds))
+            .build();
+
         Self {
             services,
             article_cache,
             threads_cache,
             thread_cache,
             groups_cache,
+            group_stats_cache,
             group_servers: Arc::new(RwLock::new(HashMap::new())),
+            pending_group_stats: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -417,12 +430,128 @@ impl NntpFederatedService {
         Ok(all_groups)
     }
 
-    /// Invalidate all cached data including group-server mapping
-    pub async fn invalidate_all(&self) {
-        self.article_cache.invalidate_all();
-        self.threads_cache.invalidate_all();
-        self.thread_cache.invalidate_all();
-        self.groups_cache.invalidate_all();
-        self.group_servers.write().await.clear();
+    /// Fetch group stats (article count and last article date) from the server.
+    /// Tries servers known to carry the group with caching and request coalescing.
+    pub async fn get_group_stats(&self, group: &str) -> Result<GroupStatsView, AppError> {
+        // Check cache first
+        if let Some(stats) = self.group_stats_cache.get(group).await {
+            tracing::debug!(%group, "Group stats cache hit");
+            return Ok(stats);
+        }
+
+        // Check for pending request (coalesce if one is already in flight)
+        {
+            let pending = self.pending_group_stats.read().await;
+            if let Some(tx) = pending.get(group) {
+                let mut rx = tx.subscribe();
+                drop(pending); // Release lock while waiting
+
+                tracing::debug!(%group, "Coalescing with pending federated group stats request");
+                return match rx.recv().await {
+                    Ok(Ok(stats)) => Ok(stats),
+                    Ok(Err(e)) => Err(AppError::Internal(e)),
+                    Err(_) => Err(AppError::Internal("Broadcast channel closed".into())),
+                };
+            }
+        }
+
+        // Register pending request
+        let (tx, _) = broadcast::channel(16);
+        {
+            let mut pending = self.pending_group_stats.write().await;
+            // Double-check cache and pending after acquiring write lock
+            if let Some(stats) = self.group_stats_cache.get(group).await {
+                return Ok(stats);
+            }
+            if let Some(existing_tx) = pending.get(group) {
+                let mut rx = existing_tx.subscribe();
+                drop(pending);
+                return match rx.recv().await {
+                    Ok(Ok(stats)) => Ok(stats),
+                    Ok(Err(e)) => Err(AppError::Internal(e)),
+                    Err(_) => Err(AppError::Internal("Broadcast channel closed".into())),
+                };
+            }
+            pending.insert(group.to_string(), tx.clone());
+        }
+
+        // Get servers for this group (smart dispatch)
+        let server_indices = self.get_servers_for_group(group).await;
+
+        // Try only relevant servers
+        let mut last_error = None;
+        let mut result: Option<GroupStatsView> = None;
+
+        for idx in server_indices {
+            let service = &self.services[idx];
+            match service.get_group_stats(group).await {
+                Ok(stats) => {
+                    // Cache the result
+                    self.group_stats_cache.insert(group.to_string(), stats.clone()).await;
+                    tracing::debug!(
+                        %group,
+                        server = %service.name(),
+                        article_count = stats.article_count,
+                        "Group stats fetched from server"
+                    );
+                    result = Some(stats);
+                    break;
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        %group,
+                        server = %service.name(),
+                        error = %e,
+                        "Failed to get group stats from server, trying next"
+                    );
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        // Broadcast result to waiters and cleanup
+        {
+            let mut pending = self.pending_group_stats.write().await;
+            pending.remove(group);
+        }
+
+        match result {
+            Some(stats) => {
+                let _ = tx.send(Ok(stats.clone()));
+                Ok(stats)
+            }
+            None => {
+                let err_msg = last_error
+                    .map(|e| e.0)
+                    .unwrap_or_else(|| "Group stats not available".into());
+                let _ = tx.send(Err(err_msg.clone()));
+                Err(AppError::Internal(err_msg))
+            }
+        }
+    }
+
+    /// Get cached thread count for a group from the threads cache.
+    /// Returns None if threads haven't been fetched for this group.
+    async fn get_cached_thread_count(&self, group: &str) -> Option<usize> {
+        // Check various cache keys that could contain this group's threads
+        for count in [500u64, 100, 50, 25, 20, 10] {
+            let cache_key = format!("{}:{}", group, count);
+            if let Some(threads) = self.threads_cache.get(&cache_key).await {
+                return Some(threads.len());
+            }
+        }
+        None
+    }
+
+    /// Get cached thread counts for a list of group names.
+    /// Returns a map of group name to thread count.
+    pub async fn get_all_cached_thread_counts_for(&self, group_names: &[String]) -> HashMap<String, usize> {
+        let mut counts = HashMap::new();
+        for name in group_names {
+            if let Some(count) = self.get_cached_thread_count(name).await {
+                counts.insert(name.clone(), count);
+            }
+        }
+        counts
     }
 }

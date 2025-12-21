@@ -20,7 +20,7 @@ use tokio::time::timeout;
 
 use crate::config::{NntpServerConfig, NntpSettings};
 
-use super::messages::{NntpError, NntpRequest, NntpResponse};
+use super::messages::{GroupStatsView, NntpError, NntpRequest, NntpResponse};
 use super::tls::NntpStream;
 use super::{threads_to_views, ArticleView, GroupView};
 
@@ -325,6 +325,60 @@ impl NntpWorker {
                     .map_err(|e| NntpError(e.to_string()))?;
 
                 Ok(NntpResponse::Article(ArticleView::from(&article)))
+            }
+
+            NntpRequest::GetGroupStats { group, .. } => {
+                tracing::debug!(worker = self.id, %group, "Fetching group stats");
+                
+                // Select the group to get article range
+                let stats = client
+                    .group(group)
+                    .await
+                    .map_err(|e| NntpError(e.to_string()))?;
+
+                // Get the date header for the last article
+                let last_article_date = if stats.last > 0 {
+                    // Use HDR command to get just the Date header for the last article
+                    match client.hdr("Date".to_string(), Some(stats.last.to_string())).await {
+                        Ok(headers) => {
+                            headers.first().map(|h| h.value.clone())
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                worker = self.id,
+                                %group,
+                                error = %e,
+                                "HDR command failed, trying HEAD fallback"
+                            );
+                            // Fallback: fetch full headers with HEAD command
+                            match client.head(nntp_rs::ArticleSpec::number_in_group(group, stats.last)).await {
+                                Ok(headers_raw) => {
+                                    // Parse Date header from raw headers
+                                    let headers_str = String::from_utf8_lossy(&headers_raw);
+                                    headers_str.lines()
+                                        .find(|line| line.to_lowercase().starts_with("date:"))
+                                        .map(|line| line[5..].trim().to_string())
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        worker = self.id,
+                                        %group,
+                                        error = %e,
+                                        "Failed to get last article date"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                Ok(NntpResponse::GroupStats(GroupStatsView {
+                    article_count: stats.count,
+                    last_article_date,
+                }))
             }
         }
     }

@@ -5,7 +5,6 @@ mod tls;
 mod worker;
 
 pub use federated::NntpFederatedService;
-pub use service::NntpService;
 
 use nntp_rs::threading::{FetchedArticle, Thread, ThreadCollection, ThreadNode, ThreadedArticleRef};
 use serde::Serialize;
@@ -218,6 +217,10 @@ pub struct GroupTreeNode {
     pub description: Option<String>,
     /// Child nodes (sorted alphabetically by segment)
     pub children: Vec<GroupTreeNode>,
+    /// Number of threads in this group (populated after visiting the group)
+    pub thread_count: Option<usize>,
+    /// RFC 2822 date of the most recent article
+    pub last_post_date: Option<String>,
 }
 
 impl GroupTreeNode {
@@ -231,13 +234,44 @@ impl GroupTreeNode {
 
         for group in sorted_groups {
             let parts: Vec<&str> = group.name.split('.').collect();
-            Self::insert_path(&mut root_children, &parts, &group.name, &group.description);
+            Self::insert_path(&mut root_children, &parts, &group.name, &group.description, None, None);
         }
 
         root_children
     }
 
-    fn insert_path(nodes: &mut Vec<GroupTreeNode>, parts: &[&str], full_name: &str, description: &Option<String>) {
+    /// Build a tree from a list of groups with thread counts and last post dates
+    /// - thread_counts: map of group name to thread count (from threads cache, populated after visiting)
+    /// - group_stats: map of group name to last_post_date (from group stats, fetched eagerly)
+    pub fn build_tree_with_stats(
+        groups: &[GroupView],
+        thread_counts: &std::collections::HashMap<String, usize>,
+        group_stats: &std::collections::HashMap<String, Option<String>>,
+    ) -> Vec<GroupTreeNode> {
+        let mut root_children: Vec<GroupTreeNode> = Vec::new();
+
+        // Sort groups alphabetically
+        let mut sorted_groups: Vec<&GroupView> = groups.iter().collect();
+        sorted_groups.sort_by(|a, b| a.name.cmp(&b.name));
+
+        for group in sorted_groups {
+            let parts: Vec<&str> = group.name.split('.').collect();
+            let thread_count = thread_counts.get(&group.name).copied();
+            let last_post_date = group_stats.get(&group.name).and_then(|d| d.clone());
+            Self::insert_path(&mut root_children, &parts, &group.name, &group.description, thread_count, last_post_date);
+        }
+
+        root_children
+    }
+
+    fn insert_path(
+        nodes: &mut Vec<GroupTreeNode>,
+        parts: &[&str],
+        full_name: &str,
+        description: &Option<String>,
+        thread_count: Option<usize>,
+        last_post_date: Option<String>,
+    ) {
         if parts.is_empty() {
             return;
         }
@@ -256,6 +290,8 @@ impl GroupTreeNode {
                 full_name: None,
                 description: None,
                 children: Vec::new(),
+                thread_count: None,
+                last_post_date: None,
             });
             nodes.last_mut().unwrap()
         };
@@ -264,9 +300,11 @@ impl GroupTreeNode {
             // This is a leaf node - an actual group
             node.full_name = Some(full_name.to_string());
             node.description = description.clone();
+            node.thread_count = thread_count;
+            node.last_post_date = last_post_date;
         } else {
             // Continue down the tree
-            Self::insert_path(&mut node.children, remaining, full_name, description);
+            Self::insert_path(&mut node.children, remaining, full_name, description, thread_count, last_post_date);
         }
     }
 
