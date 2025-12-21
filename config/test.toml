@@ -1,0 +1,24 @@
+[server]
+host = "127.0.0.1"
+port = 3001
+
+[nntp]
+server = "nntp.lore.kernel.org"
+port = 119
+timeout_seconds = 30
+worker_count = 2
+
+[nntp.defaults]
+default_group = "org.kernel.vger.linux-kernel"
+threads_per_page = 25
+
+[ui]
+site_name = "September Test"
+collapse_threshold = 5
+
+[cache]
+article_ttl_seconds = 86400
+threads_ttl_seconds = 60       # Shorter TTL for testing
+groups_ttl_seconds = 300
+max_articles = 1000
+max_thread_lists = 50

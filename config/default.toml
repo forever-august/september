@@ -1,0 +1,26 @@
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[nntp]
+#server = "nntp.lore.kernel.org"
+#port = 119
+server = "olduse.net"
+port = 11940
+timeout_seconds = 30
+worker_count = 4
+
+[nntp.defaults]
+default_group = "org.kernel.vger.linux-kernel"
+threads_per_page = 25
+
+[ui]
+# site_name defaults to the NNTP server name if not set
+collapse_threshold = 5
+
+[cache]
+article_ttl_seconds = 86400    # 24 hours - articles are immutable
+threads_ttl_seconds = 300      # 5 minutes
+groups_ttl_seconds = 3600      # 1 hour
+max_articles = 10000
+max_thread_lists = 100

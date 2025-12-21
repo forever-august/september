@@ -1,0 +1,43 @@
+[package]
+name = "september"
+version = "0.1.0"
+edition = "2021"
+description = "A web interface to NNTP servers"
+license = "Apache-2.0"
+
+[dependencies]
+# Web framework
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+
+# NNTP client
+nntp-rs = { git = "https://github.com/forever-august/nntp-rs", features = ["tokio-runtime"] }
+
+# Templating
+tera = "1"
+
+# Configuration
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Date/time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Async utilities
+futures = "0.3"
+async-channel = "2"
+
+# Caching
+moka = { version = "0.12", features = ["future"] }
+
+[dev-dependencies]
+# Browser automation testing
+thirtyfour = "0.35"
