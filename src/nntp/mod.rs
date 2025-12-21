@@ -324,15 +324,18 @@ impl From<&Thread> for ThreadView {
 
 /// Find the most recent date in the thread tree (iteratively)
 fn find_latest_date(root: &ThreadNodeView) -> Option<String> {
-    let mut latest: Option<String> = None;
+    use chrono::DateTime;
+
+    let mut latest: Option<(String, DateTime<chrono::FixedOffset>)> = None;
     let mut stack: Vec<&ThreadNodeView> = vec![root];
 
     while let Some(node) = stack.pop() {
         if let Some(ref article) = node.article {
-            // Compare dates - assuming RFC 2822 format, lexicographic comparison works
-            // for dates in the same timezone, but we'll keep the string for now
-            if latest.is_none() || article.date > *latest.as_ref().unwrap() {
-                latest = Some(article.date.clone());
+            // Parse RFC 2822 date for proper comparison
+            if let Ok(parsed) = DateTime::parse_from_rfc2822(&article.date) {
+                if latest.is_none() || parsed > latest.as_ref().unwrap().1 {
+                    latest = Some((article.date.clone(), parsed));
+                }
             }
         }
         for reply in &node.replies {
@@ -340,7 +343,7 @@ fn find_latest_date(root: &ThreadNodeView) -> Option<String> {
         }
     }
 
-    latest
+    latest.map(|(s, _)| s)
 }
 
 impl From<&ThreadNode> for ThreadNodeView {
