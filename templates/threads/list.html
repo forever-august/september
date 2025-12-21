@@ -5,8 +5,12 @@
 {% block content %}
 <div class="group-header">
     <h1>{{ group }}</h1>
-    <p class="thread-count">{{ threads | length }} threads</p>
+    <p class="thread-count">{{ pagination.total_items }} threads</p>
 </div>
+
+{% if pagination.total_pages > 1 %}
+{% include "partials/pagination.html" %}
+{% endif %}
 
 <div class="thread-list">
     {% for thread in threads %}
@@ -37,4 +41,8 @@
     </div>
     {% endfor %}
 </div>
+
+{% if pagination.total_pages > 1 %}
+{% include "partials/pagination.html" %}
+{% endif %}
 {% endblock %}

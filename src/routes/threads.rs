@@ -17,17 +17,20 @@ pub async fn list(
     Path(group): Path<String>,
     Query(params): Query<ListParams>,
 ) -> Result<Html<String>, AppError> {
-    let page = params.page.unwrap_or(1);
-    let threads_per_page = state.config.nntp.defaults.threads_per_page as u64;
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = state.config.nntp.defaults.threads_per_page;
 
-    // Fetch threads (cached + coalesced)
-    let threads = state.nntp.get_threads(&group, threads_per_page).await?;
+    // Fetch paginated threads
+    let (threads, pagination) = state
+        .nntp
+        .get_threads_paginated(&group, page, per_page)
+        .await?;
 
     let mut context = tera::Context::new();
     context.insert("config", &state.config.ui);
     context.insert("group", &group);
     context.insert("threads", &threads);
-    context.insert("page", &page);
+    context.insert("pagination", &pagination);
 
     let html = state.tera.render("threads/list.html", &context)?;
     Ok(Html(html))
@@ -39,26 +42,33 @@ pub struct ViewPath {
     pub message_id: String,
 }
 
+#[derive(Deserialize)]
+pub struct ViewParams {
+    pub page: Option<usize>,
+}
+
 pub async fn view(
     State(state): State<AppState>,
     Path(path): Path<ViewPath>,
+    Query(params): Query<ViewParams>,
 ) -> Result<Html<String>, AppError> {
-    // Fetch the full thread with all replies (cached + coalesced)
-    let thread = state
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = state.config.nntp.defaults.articles_per_page;
+    let collapse_threshold = state.config.ui.collapse_threshold;
+
+    // Fetch thread with paginated article bodies
+    let (thread, comments, pagination) = state
         .nntp
-        .get_thread(&path.group, &path.message_id)
+        .get_thread_paginated(&path.group, &path.message_id, page, per_page, collapse_threshold)
         .await
         .map_err(|_| AppError::ArticleNotFound(path.message_id.clone()))?;
-
-    // Flatten the thread tree for non-recursive template rendering
-    let collapse_threshold = state.config.ui.collapse_threshold;
-    let comments = thread.root.flatten(collapse_threshold);
 
     let mut context = tera::Context::new();
     context.insert("config", &state.config.ui);
     context.insert("group", &path.group);
     context.insert("thread", &thread);
     context.insert("comments", &comments);
+    context.insert("pagination", &pagination);
 
     let html = state.tera.render("threads/view.html", &context)?;
     Ok(Html(html))

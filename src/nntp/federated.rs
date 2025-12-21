@@ -16,7 +16,7 @@ use crate::config::{AppConfig, CacheConfig};
 use crate::error::AppError;
 
 use super::service::NntpService;
-use super::{ArticleView, GroupView, ThreadView};
+use super::{ArticleView, FlatComment, GroupView, PaginationInfo, ThreadView};
 
 /// Federated NNTP Service that presents multiple servers as one unified source
 #[derive(Clone)]
@@ -209,6 +209,34 @@ impl NntpFederatedService {
             .unwrap_or_else(|| AppError::Internal("Group not found on any server".into())))
     }
 
+    /// Fetch paginated threads from a newsgroup.
+    /// Fetches a larger batch and returns the requested page slice.
+    pub async fn get_threads_paginated(
+        &self,
+        group: &str,
+        page: usize,
+        per_page: usize,
+    ) -> Result<(Vec<ThreadView>, PaginationInfo), AppError> {
+        // Fetch a larger batch to enable pagination (e.g., 500 threads)
+        const MAX_FETCH: u64 = 500;
+
+        let all_threads = self.get_threads(group, MAX_FETCH).await?;
+        let total = all_threads.len();
+        let pagination = PaginationInfo::new(page, total, per_page);
+
+        // Slice for current page
+        let start = (page - 1) * per_page;
+        let end = (start + per_page).min(total);
+
+        let page_threads = if start < total {
+            all_threads[start..end].to_vec()
+        } else {
+            Vec::new()
+        };
+
+        Ok((page_threads, pagination))
+    }
+
     /// Fetch a single thread by group and root message ID
     /// Tries only servers known to carry the group (or all servers if group is unknown)
     pub async fn get_thread(&self, group: &str, message_id: &str) -> Result<ThreadView, AppError> {
@@ -256,6 +284,66 @@ impl NntpFederatedService {
         Err(last_error
             .map(|e| AppError::Internal(e.0))
             .unwrap_or_else(|| AppError::Internal("Thread not found on any server".into())))
+    }
+
+    /// Fetch a thread with paginated article bodies.
+    /// Only fetches bodies for articles on the current page.
+    pub async fn get_thread_paginated(
+        &self,
+        group: &str,
+        message_id: &str,
+        page: usize,
+        per_page: usize,
+        collapse_threshold: usize,
+    ) -> Result<(ThreadView, Vec<FlatComment>, PaginationInfo), AppError> {
+        // Get thread metadata (uses existing cache)
+        let thread = self.get_thread(group, message_id).await?;
+
+        // Flatten and determine which message IDs need bodies
+        let (mut comments, pagination, page_msg_ids) =
+            thread.root.flatten_paginated(page, per_page, collapse_threshold);
+
+        // Collect bodies: check article cache first, then fetch missing ones
+        let mut bodies: HashMap<String, ArticleView> = HashMap::new();
+        let mut needed_ids: Vec<String> = Vec::new();
+
+        for msg_id in &page_msg_ids {
+            if let Some(article) = self.article_cache.get(msg_id).await {
+                bodies.insert(msg_id.clone(), article);
+            } else {
+                needed_ids.push(msg_id.clone());
+            }
+        }
+
+        // Fetch missing bodies
+        for msg_id in needed_ids {
+            match self.get_article(&msg_id).await {
+                Ok(article) => {
+                    bodies.insert(msg_id, article);
+                }
+                Err(e) => {
+                    tracing::warn!(%msg_id, error = %e, "Failed to fetch article body");
+                }
+            }
+        }
+
+        // Populate bodies in the flattened comments for current page only
+        let page_ids_set: std::collections::HashSet<String> =
+            page_msg_ids.into_iter().collect();
+        let start = (page - 1) * per_page;
+        let end = (start + per_page).min(comments.len());
+
+        for (i, comment) in comments.iter_mut().enumerate() {
+            if i >= start && i < end && page_ids_set.contains(&comment.message_id) {
+                if let Some(fetched) = bodies.get(&comment.message_id) {
+                    if let Some(ref mut article) = comment.article {
+                        article.body = fetched.body.clone();
+                    }
+                }
+            }
+        }
+
+        Ok((thread, comments, pagination))
     }
 
     /// Fetch the list of available newsgroups

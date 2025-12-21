@@ -10,6 +10,7 @@ request_timeout_seconds = 30
 
 [nntp.defaults]
 threads_per_page = 25
+articles_per_page = 20
 
 # NNTP servers (federated pool - tried in order)
 #[[server]]

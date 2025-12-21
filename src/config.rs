@@ -119,6 +119,14 @@ impl NntpServerConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct NntpDefaults {
     pub threads_per_page: usize,
+    #[serde(default = "NntpDefaults::default_articles_per_page")]
+    pub articles_per_page: usize,
+}
+
+impl NntpDefaults {
+    fn default_articles_per_page() -> usize {
+        20
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

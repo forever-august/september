@@ -10,6 +10,48 @@ pub use service::NntpService;
 use nntp_rs::threading::{FetchedArticle, Thread, ThreadCollection, ThreadNode, ThreadedArticleRef};
 use serde::Serialize;
 
+/// Pagination metadata for templates
+#[derive(Debug, Clone, Serialize)]
+pub struct PaginationInfo {
+    pub current_page: usize,
+    pub total_pages: usize,
+    pub total_items: usize,
+    pub items_per_page: usize,
+    pub has_prev: bool,
+    pub has_next: bool,
+    /// Visible page numbers for navigation (e.g., [1, 2, 3, 4, 5])
+    pub visible_pages: Vec<usize>,
+}
+
+impl PaginationInfo {
+    pub fn new(current_page: usize, total_items: usize, items_per_page: usize) -> Self {
+        let total_pages = if total_items == 0 {
+            1
+        } else {
+            (total_items + items_per_page - 1) / items_per_page
+        };
+
+        let visible_pages = Self::compute_visible_pages(current_page, total_pages);
+
+        Self {
+            current_page,
+            total_pages,
+            total_items,
+            items_per_page,
+            has_prev: current_page > 1,
+            has_next: current_page < total_pages,
+            visible_pages,
+        }
+    }
+
+    fn compute_visible_pages(current: usize, total: usize) -> Vec<usize> {
+        let window = 2; // Show 2 pages on each side
+        let start = current.saturating_sub(window).max(1);
+        let end = (current + window).min(total);
+        (start..=end).collect()
+    }
+}
+
 /// View model for a thread in list view
 #[derive(Debug, Clone, Serialize)]
 pub struct ThreadView {
@@ -114,6 +156,34 @@ impl ThreadNodeView {
         }
 
         count
+    }
+
+    /// Flatten and return pagination info with message IDs for the current page.
+    /// Returns (all_flattened, pagination_info, message_ids_for_page)
+    pub fn flatten_paginated(
+        &self,
+        page: usize,
+        per_page: usize,
+        collapse_threshold: usize,
+    ) -> (Vec<FlatComment>, PaginationInfo, Vec<String>) {
+        let all_flat = self.flatten(collapse_threshold);
+        let total = all_flat.len();
+        let pagination = PaginationInfo::new(page, total, per_page);
+
+        // Determine which message IDs are on the current page
+        let start = (page - 1) * per_page;
+        let end = (start + per_page).min(total);
+
+        let message_ids: Vec<String> = if start < total {
+            all_flat[start..end]
+                .iter()
+                .map(|c| c.message_id.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        (all_flat, pagination, message_ids)
     }
 }
 

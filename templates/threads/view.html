@@ -7,11 +7,24 @@
     <header class="thread-header">
         <a href="/g/{{ group }}" class="back-link">&larr; Back to {{ group }}</a>
         <h1>{{ thread.subject }}</h1>
-        <p class="thread-stats">{{ thread.article_count }} messages in thread</p>
+        <p class="thread-stats">
+            {{ pagination.total_items }} messages in thread
+            {% if pagination.total_pages > 1 %}
+            (page {{ pagination.current_page }} of {{ pagination.total_pages }})
+            {% endif %}
+        </p>
     </header>
+
+    {% if pagination.total_pages > 1 %}
+    {% include "partials/pagination.html" %}
+    {% endif %}
+
+    {% set page_start = (pagination.current_page - 1) * pagination.items_per_page %}
+    {% set page_end = page_start + pagination.items_per_page %}
 
     <div class="thread-comments">
         {% for comment in comments %}
+        {% if loop.index0 >= page_start and loop.index0 < page_end %}
         <div class="comment depth-{{ comment.depth }}"
              id="msg-{{ comment.message_id | urlencode_strict }}"
              data-depth="{{ comment.depth }}"
@@ -48,7 +61,12 @@
             </button>
             {% endif %}
         </div>
+        {% endif %}
         {% endfor %}
     </div>
+
+    {% if pagination.total_pages > 1 %}
+    {% include "partials/pagination.html" %}
+    {% endif %}
 </article>
 {% endblock %}
