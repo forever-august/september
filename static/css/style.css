@@ -1,0 +1,497 @@
+/* Minimal CSS */
+
+body {
+    font-family: Verdana, Geneva, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    color: #000;
+    background: #fafafa;
+    margin: 0;
+    padding: 0;
+}
+
+a {
+    color: #00c;
+}
+
+a:visited {
+    color: #551a8b;
+}
+
+/* Header */
+.site-header {
+    background: #fff;
+    border-bottom: 1px solid #ccc;
+    padding: 8px 0;
+}
+
+.header-content {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 0 12px;
+}
+
+.site-title {
+    color: #000;
+    font-weight: bold;
+    font-size: 24px;
+    text-decoration: none;
+}
+
+.site-title:visited {
+    color: #000;
+}
+
+/* Main content */
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 12px;
+}
+
+/* Footer */
+.site-footer {
+    margin-top: 32px;
+    padding: 12px;
+    text-align: center;
+    color: #666;
+    font-size: 12px;
+    border-top: 1px solid #ccc;
+}
+
+.footer-content {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+/* Page headers */
+.group-header h1,
+.page-header h1 {
+    font-size: 16px;
+    font-weight: bold;
+    margin: 0 0 4px 0;
+}
+
+.thread-count,
+.page-description {
+    color: #666;
+    font-size: 13px;
+}
+
+/* Thread list */
+.thread-list {
+    margin: 0;
+    padding: 0;
+}
+
+.thread-card-link {
+    text-decoration: none;
+    color: inherit;
+}
+
+.thread-card-link:visited {
+    color: inherit;
+}
+
+.thread-card {
+    padding: 6px 0;
+    border-bottom: 1px solid #eee;
+}
+
+.thread-title {
+    font-size: 14px;
+    font-weight: normal;
+    margin: 0;
+    color: #00c;
+}
+
+.thread-card-link:visited .thread-title {
+    color: #551a8b;
+}
+
+.thread-meta,
+.thread-footer {
+    font-size: 12px;
+    color: #666;
+    margin-top: 2px;
+}
+
+.thread-meta .separator,
+.thread-footer .separator {
+    margin: 0 4px;
+}
+
+/* Thread view */
+.thread-view {
+    background: #fff;
+    padding: 12px;
+}
+
+.thread-header {
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 8px;
+    margin-bottom: 12px;
+}
+
+.thread-header h1 {
+    font-size: 16px;
+    font-weight: bold;
+    margin: 6px 0;
+}
+
+.thread-stats {
+    font-size: 12px;
+    color: #666;
+}
+
+.back-link {
+    font-size: 12px;
+}
+
+/* Comments */
+.thread-comments {
+    margin-top: 12px;
+}
+
+.comment {
+    margin-top: 12px;
+    padding-left: 12px;
+    border-left: 1px solid #ccc;
+}
+
+.comment.depth-0 {
+    border-left: none;
+    padding-left: 0;
+    margin-top: 0;
+}
+
+.comment.depth-1 { margin-left: 20px; }
+.comment.depth-2 { margin-left: 40px; }
+.comment.depth-3 { margin-left: 60px; }
+.comment.depth-4 { margin-left: 80px; }
+.comment.depth-5 { margin-left: 100px; }
+.comment.depth-6 { margin-left: 120px; }
+.comment.depth-7 { margin-left: 140px; }
+.comment.depth-8 { margin-left: 160px; }
+.comment.depth-9,
+.comment.depth-10,
+.comment.depth-11,
+.comment.depth-12,
+.comment.depth-13,
+.comment.depth-14,
+.comment.depth-15 { margin-left: 180px; }
+
+.comment.collapsed-hidden {
+    display: none;
+}
+
+.comment-header {
+    margin-bottom: 4px;
+}
+
+.comment-title {
+    font-size: 13px;
+    font-weight: bold;
+}
+
+.comment-meta {
+    font-size: 12px;
+    color: #666;
+}
+
+.comment-meta .separator {
+    margin: 0 4px;
+}
+
+.comment-body {
+    font-size: 14px;
+}
+
+.article-text {
+    font-family: monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+    margin: 0;
+}
+
+.article-preview {
+    margin-bottom: 6px;
+}
+
+.read-more {
+    font-size: 12px;
+}
+
+.comment-placeholder {
+    color: #666;
+    font-style: italic;
+}
+
+.expand-replies {
+    background: none;
+    border: none;
+    color: #00c;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0;
+    font-family: inherit;
+}
+
+/* Article view */
+.article-view {
+    background: #fff;
+    padding: 12px;
+}
+
+.article-header {
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 8px;
+    margin-bottom: 12px;
+}
+
+.article-header h1 {
+    font-size: 16px;
+    font-weight: bold;
+    margin: 6px 0;
+}
+
+.article-meta {
+    font-size: 12px;
+    color: #666;
+}
+
+.article-meta .author {
+    color: #000;
+    font-weight: bold;
+}
+
+.article-meta .separator {
+    margin: 0 4px;
+}
+
+.article-content {
+    margin: 12px 0;
+}
+
+.article-footer {
+    border-top: 1px solid #ccc;
+    padding-top: 8px;
+    margin-top: 12px;
+}
+
+.message-id {
+    font-family: monospace;
+    font-size: 12px;
+    color: #666;
+    word-break: break-all;
+}
+
+.no-content {
+    color: #666;
+    font-style: italic;
+}
+
+/* Headers section */
+.article-headers-section {
+    margin-bottom: 12px;
+    background: #f5f5f5;
+    padding: 6px;
+}
+
+.toggle-headers {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    color: #666;
+    padding: 0;
+}
+
+.toggle-headers:hover {
+    text-decoration: underline;
+}
+
+.toggle-icon::before {
+    content: "[+] ";
+}
+
+.article-headers-section.expanded .toggle-icon::before {
+    content: "[-] ";
+}
+
+.article-headers {
+    display: none;
+    margin-top: 6px;
+}
+
+.article-headers-section.expanded .article-headers {
+    display: block;
+}
+
+.headers-text {
+    font-family: monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 0;
+    color: #666;
+}
+
+/* Empty/error states */
+.empty-state {
+    padding: 24px;
+    color: #666;
+    text-align: center;
+}
+
+.error-page {
+    padding: 24px;
+    text-align: center;
+}
+
+.error-page h1 {
+    font-size: 18px;
+    margin-bottom: 12px;
+}
+
+.error-page p {
+    color: #666;
+}
+
+/* Search */
+.search-container {
+    margin-bottom: 12px;
+}
+
+.search-input {
+    width: 100%;
+    padding: 6px;
+    font-family: inherit;
+    font-size: 14px;
+    border: 1px solid #ccc;
+}
+
+.search-input:focus {
+    outline: none;
+    border-color: #00c;
+}
+
+/* Group cards */
+.group-cards {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.group-card {
+    background: #fff;
+    border: 1px solid #ccc;
+    padding: 8px 12px;
+    min-width: 150px;
+}
+
+.group-card.hidden {
+    display: none;
+}
+
+.group-card-link {
+    text-decoration: none;
+    display: block;
+}
+
+.group-card-link:hover .group-name {
+    text-decoration: underline;
+}
+
+.group-name {
+    display: block;
+    color: #00c;
+    font-weight: bold;
+}
+
+.group-card-link:visited .group-name {
+    color: #551a8b;
+}
+
+.group-meta {
+    display: block;
+    font-size: 12px;
+    color: #666;
+}
+
+.group-description {
+    display: block;
+    font-size: 12px;
+    color: #666;
+    margin-top: 4px;
+}
+
+.group-view-link {
+    font-size: 11px;
+    margin-top: 4px;
+    display: inline-block;
+}
+
+.current-group-notice {
+    background: #fff;
+    border: 1px solid #ccc;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+}
+
+/* Search results */
+.search-results {
+    background: #fff;
+    padding: 12px;
+    margin-bottom: 12px;
+}
+
+.search-results-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.search-result-item {
+    padding: 3px 0;
+}
+
+.search-result-item.hidden {
+    display: none;
+}
+
+.no-results {
+    color: #666;
+    font-style: italic;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    .comment.depth-1 { margin-left: 10px; }
+    .comment.depth-2 { margin-left: 20px; }
+    .comment.depth-3 { margin-left: 30px; }
+    .comment.depth-4 { margin-left: 40px; }
+    .comment.depth-5,
+    .comment.depth-6,
+    .comment.depth-7,
+    .comment.depth-8,
+    .comment.depth-9,
+    .comment.depth-10,
+    .comment.depth-11,
+    .comment.depth-12,
+    .comment.depth-13,
+    .comment.depth-14,
+    .comment.depth-15 { margin-left: 50px; }
+
+    .group-cards {
+        gap: 6px;
+    }
+
+    .group-card {
+        min-width: 100px;
+    }
+}
