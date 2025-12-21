@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}{{ thread.subject }} - {{ config.site_name }}{% endblock %}
+
+{% block content %}
+<article class="thread-view">
+    <header class="thread-header">
+        <a href="/g/{{ group }}" class="back-link">&larr; Back to {{ group }}</a>
+        <h1>{{ thread.subject }}</h1>
+        <p class="thread-stats">{{ thread.article_count }} messages in thread</p>
+    </header>
+
+    <div class="thread-comments">
+        {% for comment in comments %}
+        <div class="comment depth-{{ comment.depth }}"
+             id="msg-{{ comment.message_id | urlencode_strict }}"
+             data-depth="{{ comment.depth }}"
+             {% if comment.starts_collapsed %}data-collapsed="true"{% endif %}>
+            {% if comment.article %}
+            <div class="comment-header">
+                <a href="/g/{{ group }}/article/{{ comment.message_id | urlencode_strict }}" class="comment-title">
+                    {{ comment.article.subject }}
+                </a>
+                <div class="comment-meta">
+                    <span class="author">{{ comment.article.from }}</span>
+                    <span class="separator">·</span>
+                    <span class="date">{{ comment.article.date | timeago }}</span>
+                </div>
+            </div>
+            <div class="comment-body">
+                {% if comment.article.body %}
+                <pre class="article-text article-preview">{{ comment.article.body | preview(lines=10) }}</pre>
+                {% if comment.article.body | has_more_lines(lines=10) %}
+                <a href="/g/{{ group }}/article/{{ comment.message_id | urlencode_strict }}" class="read-more">Read more</a>
+                {% endif %}
+                {% else %}
+                <p class="no-content">Article content not available.</p>
+                {% endif %}
+            </div>
+            {% else %}
+            <div class="comment-placeholder">
+                [Missing article: {{ comment.message_id }}]
+            </div>
+            {% endif %}
+            {% if comment.starts_collapsed %}
+            <button class="expand-replies" data-count="{{ comment.descendant_count }}">
+                Show {{ comment.descendant_count }} more replies
+            </button>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</article>
+{% endblock %}

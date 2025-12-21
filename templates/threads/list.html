@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}{{ group }} - {{ config.site_name }}{% endblock %}
+
+{% block content %}
+<div class="group-header">
+    <h1>{{ group }}</h1>
+    <p class="thread-count">{{ threads | length }} threads</p>
+</div>
+
+<div class="thread-list">
+    {% for thread in threads %}
+    <a href="/g/{{ group }}/{% if thread.article_count == 1 %}article{% else %}thread{% endif %}/{{ thread.root_message_id | urlencode_strict }}" class="thread-card-link">
+        <div class="thread-card">
+            <div class="thread-content">
+                <h2 class="thread-title">{{ thread.subject }}</h2>
+                <div class="thread-meta">
+                    {% if thread.root.article %}
+                    <span class="author">{{ thread.root.article.from }}</span>
+                    <span class="separator">·</span>
+                    <span class="date">{{ thread.root.article.date | timeago }}</span>
+                    {% endif %}
+                </div>
+                <div class="thread-footer">
+                    <span class="reply-count">{{ thread.article_count - 1 }} replies</span>
+                    {% if thread.last_post_date %}
+                    <span class="separator">·</span>
+                    <span class="last-activity">most recent {{ thread.last_post_date | timeago }}</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </a>
+    {% else %}
+    <div class="empty-state">
+        <p>No threads found in this group.</p>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

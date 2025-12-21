@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}{{ config.site_name }} - Newsgroups{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>
+        <a href="/">Newsgroups</a>
+        {% for crumb in breadcrumbs %}
+        / <a href="/browse/{{ crumb.1 }}">{{ crumb.0 }}</a>
+        {% endfor %}
+    </h1>
+    {% if path == "" %}
+    <p class="page-description">Browse {{ groups | length }} available newsgroups</p>
+    {% endif %}
+</div>
+
+{% if current_node and current_node.full_name %}
+<div class="current-group-notice">
+    <a href="/g/{{ current_node.full_name | urlencode_strict }}">View {{ current_node.full_name }}</a>
+    {% if current_node.description %} - {{ current_node.description }}{% endif %}
+</div>
+{% endif %}
+
+<div class="search-container">
+    <input type="text"
+           id="group-search"
+           class="search-input"
+           placeholder="Filter groups..."
+           autocomplete="off">
+</div>
+
+<div id="cards-view" class="group-cards">
+    {% for node in nodes %}
+    <div class="group-card" data-name="{{ node.segment }}">
+        {% if node.children | length > 0 %}
+        <a href="/browse/{% if path %}{{ path }}.{% endif %}{{ node.segment }}" class="group-card-link">
+            <span class="group-name">{{ node.segment }}</span>
+            <span class="group-meta">{{ node.children | length }} subgroups</span>
+        </a>
+        {% if node.full_name %}
+        <a href="/g/{{ node.full_name | urlencode_strict }}" class="group-view-link">[view group]</a>
+        {% endif %}
+        {% elif node.full_name %}
+        <a href="/g/{{ node.full_name | urlencode_strict }}" class="group-card-link">
+            <span class="group-name">{{ node.segment }}</span>
+            {% if node.description %}
+            <span class="group-description">{{ node.description }}</span>
+            {% endif %}
+        </a>
+        {% else %}
+        <span class="group-name">{{ node.segment }}</span>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>No groups found at this level.</p>
+    </div>
+    {% endfor %}
+</div>
+
+<div id="search-results" class="search-results" style="display: none;">
+    <ul class="search-results-list">
+        {% for group in groups %}
+        <li class="search-result-item" data-group="{{ group.name }}">
+            <a href="/g/{{ group.name | urlencode_strict }}">{{ group.name }}</a>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endblock %}

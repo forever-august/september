@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}{{ article.subject }} - {{ config.site_name }}{% endblock %}
+
+{% block content %}
+<article class="article-view">
+    <header class="article-header">
+        <a href="/g/{{ group }}" class="back-link">&larr; Back to {{ group }}</a>
+        <h1>{{ article.subject }}</h1>
+        <div class="article-meta">
+            <span class="author">{{ article.from }}</span>
+            <span class="separator">·</span>
+            <span class="date">{{ article.date | timeago }}</span>
+        </div>
+    </header>
+
+    {% if article.headers %}
+    <div class="article-headers-section">
+        <button class="toggle-headers" onclick="this.parentElement.classList.toggle('expanded'); this.querySelector('.show-text').hidden = this.parentElement.classList.contains('expanded'); this.querySelector('.hide-text').hidden = !this.parentElement.classList.contains('expanded');">
+            <span class="toggle-icon"></span>
+            <span class="show-text">Show headers</span>
+            <span class="hide-text" hidden>Hide headers</span>
+        </button>
+        <div class="article-headers">
+            <pre class="headers-text">{{ article.headers }}</pre>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="article-content">
+        {% if article.body %}
+        <pre class="article-text">{{ article.body }}</pre>
+        {% else %}
+        <p class="no-content">Article content not available.</p>
+        {% endif %}
+    </div>
+
+    <footer class="article-footer">
+        <p class="message-id">Message-ID: {{ article.message_id }}</p>
+    </footer>
+</article>
+{% endblock %}
