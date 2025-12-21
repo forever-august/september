@@ -37,6 +37,16 @@
         <a href="/browse/{% if path %}{{ path }}.{% endif %}{{ node.segment }}" class="group-card-link">
             <span class="group-name">{{ node.segment }}</span>
             <span class="group-meta">{{ node.children | length }} subgroups</span>
+            {% if node.full_name %}
+            <span class="group-stats">
+                {% if node.thread_count %}
+                <span class="thread-count">{{ node.thread_count }} threads</span>
+                {% endif %}
+                {% if node.last_post_date %}
+                <span class="last-post">last post {{ node.last_post_date | timeago }}</span>
+                {% endif %}
+            </span>
+            {% endif %}
         </a>
         {% if node.full_name %}
         <a href="/g/{{ node.full_name | urlencode_strict }}" class="group-view-link">[view group]</a>
@@ -47,6 +57,14 @@
             {% if node.description %}
             <span class="group-description">{{ node.description }}</span>
             {% endif %}
+            <span class="group-stats">
+                {% if node.thread_count %}
+                <span class="thread-count">{{ node.thread_count }} threads</span>
+                {% endif %}
+                {% if node.last_post_date %}
+                <span class="last-post">last post {{ node.last_post_date | timeago }}</span>
+                {% endif %}
+            </span>
         </a>
         {% else %}
         <span class="group-name">{{ node.segment }}</span>
@@ -63,7 +81,20 @@
     <ul class="search-results-list">
         {% for group in groups %}
         <li class="search-result-item" data-group="{{ group.name }}">
-            <a href="/g/{{ group.name | urlencode_strict }}">{{ group.name }}</a>
+            <a href="/g/{{ group.name | urlencode_strict }}" class="search-result-link">
+                <span class="search-result-name">{{ group.name }}</span>
+                {% if group.description %}
+                <span class="search-result-description">{{ group.description }}</span>
+                {% endif %}
+                <span class="search-result-stats">
+                    {% if thread_counts[group.name] %}
+                    <span class="thread-count">{{ thread_counts[group.name] }} threads</span>
+                    {% endif %}
+                    {% if group_stats[group.name] %}
+                    <span class="last-post">last post {{ group_stats[group.name] | timeago }}</span>
+                    {% endif %}
+                </span>
+            </a>
         </li>
         {% endfor %}
     </ul>

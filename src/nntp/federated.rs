@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::DateTime;
 use moka::future::Cache;
 use tokio::sync::{broadcast, RwLock};
 
@@ -240,9 +241,9 @@ impl NntpFederatedService {
         // Parse RFC 2822 dates for proper comparison
         all_threads.sort_by(|a, b| {
             let a_parsed = a.last_post_date.as_ref()
-                .and_then(|d| chrono::DateTime::parse_from_rfc2822(d).ok());
+                .and_then(|d| DateTime::parse_from_rfc2822(d).ok());
             let b_parsed = b.last_post_date.as_ref()
-                .and_then(|d| chrono::DateTime::parse_from_rfc2822(d).ok());
+                .and_then(|d| DateTime::parse_from_rfc2822(d).ok());
             
             match (b_parsed, a_parsed) {
                 (Some(b_dt), Some(a_dt)) => b_dt.cmp(&a_dt),

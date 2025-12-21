@@ -26,6 +26,16 @@ pub async fn list(
         .get_threads_paginated(&group, page, per_page)
         .await?;
 
+    // Fetch and cache group stats (article count and last article date)
+    // This runs in the background so it doesn't block page load
+    let nntp = state.nntp.clone();
+    let group_name = group.clone();
+    tokio::spawn(async move {
+        if let Err(e) = nntp.get_group_stats(&group_name).await {
+            tracing::debug!(%group_name, error = %e, "Failed to fetch group stats");
+        }
+    });
+
     let mut context = tera::Context::new();
     context.insert("config", &state.config.ui);
     context.insert("group", &group);
