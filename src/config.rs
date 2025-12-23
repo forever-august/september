@@ -121,11 +121,18 @@ pub struct NntpDefaults {
     pub threads_per_page: usize,
     #[serde(default = "NntpDefaults::default_articles_per_page")]
     pub articles_per_page: usize,
+    /// Maximum number of articles to fetch per group (default: 500)
+    #[serde(default = "NntpDefaults::default_max_articles_per_group")]
+    pub max_articles_per_group: u64,
 }
 
 impl NntpDefaults {
     fn default_articles_per_page() -> usize {
         20
+    }
+
+    fn default_max_articles_per_group() -> u64 {
+        500
     }
 }
 
@@ -162,6 +169,9 @@ pub struct CacheConfig {
     /// Maximum number of cached thread lists (default: 100)
     #[serde(default = "CacheConfig::default_max_thread_lists")]
     pub max_thread_lists: u64,
+    /// Maximum number of cached group stats (default: 1000)
+    #[serde(default = "CacheConfig::default_max_group_stats")]
+    pub max_group_stats: u64,
 }
 
 impl Default for CacheConfig {
@@ -172,6 +182,7 @@ impl Default for CacheConfig {
             groups_ttl_seconds: Self::default_groups_ttl(),
             max_articles: Self::default_max_articles(),
             max_thread_lists: Self::default_max_thread_lists(),
+            max_group_stats: Self::default_max_group_stats(),
         }
     }
 }
@@ -191,6 +202,9 @@ impl CacheConfig {
     }
     fn default_max_thread_lists() -> u64 {
         100
+    }
+    fn default_max_group_stats() -> u64 {
+        1000
     }
 }
 

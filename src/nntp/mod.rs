@@ -6,7 +6,9 @@ mod worker;
 
 pub use federated::NntpFederatedService;
 
-use nntp_rs::threading::{FetchedArticle, Thread, ThreadCollection, ThreadNode, ThreadedArticleRef};
+use std::collections::HashMap;
+
+use nntp_rs::OverviewEntry;
 use serde::Serialize;
 
 /// Pagination metadata for templates
@@ -68,6 +70,9 @@ pub struct ThreadNodeView {
     pub message_id: String,
     pub article: Option<ArticleView>,
     pub replies: Vec<ThreadNodeView>,
+    /// Pre-computed count of all descendants (cached during tree construction)
+    #[serde(skip)]
+    pub descendant_count: usize,
 }
 
 /// Flattened comment for non-recursive template rendering
@@ -83,35 +88,21 @@ pub struct FlatComment {
 }
 
 impl ThreadNodeView {
-    /// Collect all message IDs in the tree (iteratively)
-    pub fn collect_message_ids(&self) -> Vec<String> {
-        let mut ids = Vec::new();
+    /// Check if a message_id exists anywhere in this node or its descendants.
+    /// Uses iteration instead of recursion to avoid stack overflow.
+    pub fn contains_message_id(&self, target_id: &str) -> bool {
         let mut stack: Vec<&ThreadNodeView> = vec![self];
 
         while let Some(node) = stack.pop() {
-            ids.push(node.message_id.clone());
+            if node.message_id == target_id {
+                return true;
+            }
             for reply in &node.replies {
                 stack.push(reply);
             }
         }
 
-        ids
-    }
-
-    /// Populate article bodies from a map of message_id -> ArticleView (iteratively)
-    pub fn populate_bodies(&mut self, articles: &std::collections::HashMap<String, ArticleView>) {
-        let mut stack: Vec<&mut ThreadNodeView> = vec![self];
-
-        while let Some(node) = stack.pop() {
-            if let Some(fetched) = articles.get(&node.message_id) {
-                if let Some(ref mut article) = node.article {
-                    article.body = fetched.body.clone();
-                }
-            }
-            for reply in &mut node.replies {
-                stack.push(reply);
-            }
-        }
+        false
     }
 
     /// Flatten the thread tree into a list for non-recursive rendering.
@@ -122,14 +113,14 @@ impl ThreadNodeView {
         let mut stack: Vec<(&ThreadNodeView, usize)> = vec![(self, 0)];
 
         while let Some((node, depth)) = stack.pop() {
-            let descendant_count = Self::count_descendants(node);
+            // Use pre-computed descendant count instead of walking the tree
             let starts_collapsed = depth >= collapse_threshold && !node.replies.is_empty();
 
             result.push(FlatComment {
                 message_id: node.message_id.clone(),
                 article: node.article.clone(),
                 depth,
-                descendant_count,
+                descendant_count: node.descendant_count,
                 starts_collapsed,
             });
 
@@ -140,21 +131,6 @@ impl ThreadNodeView {
         }
 
         result
-    }
-
-    /// Count total descendants of a node (iteratively)
-    fn count_descendants(node: &ThreadNodeView) -> usize {
-        let mut count = 0;
-        let mut stack: Vec<&ThreadNodeView> = node.replies.iter().collect();
-
-        while let Some(n) = stack.pop() {
-            count += 1;
-            for reply in &n.replies {
-                stack.push(reply);
-            }
-        }
-
-        count
     }
 
     /// Flatten and return pagination info with message IDs for the current page.
@@ -227,6 +203,7 @@ impl GroupTreeNode {
     /// Build a tree from a list of groups
     pub fn build_tree(groups: &[GroupView]) -> Vec<GroupTreeNode> {
         let mut root_children: Vec<GroupTreeNode> = Vec::new();
+        let mut root_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
         // Sort groups alphabetically
         let mut sorted_groups: Vec<&GroupView> = groups.iter().collect();
@@ -234,7 +211,7 @@ impl GroupTreeNode {
 
         for group in sorted_groups {
             let parts: Vec<&str> = group.name.split('.').collect();
-            Self::insert_path(&mut root_children, &parts, &group.name, &group.description, None, None);
+            Self::insert_path(&mut root_children, &mut root_map, &parts, &group.name, &group.description, None, None);
         }
 
         root_children
@@ -249,6 +226,7 @@ impl GroupTreeNode {
         group_stats: &std::collections::HashMap<String, Option<String>>,
     ) -> Vec<GroupTreeNode> {
         let mut root_children: Vec<GroupTreeNode> = Vec::new();
+        let mut root_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
         // Sort groups alphabetically
         let mut sorted_groups: Vec<&GroupView> = groups.iter().collect();
@@ -258,7 +236,7 @@ impl GroupTreeNode {
             let parts: Vec<&str> = group.name.split('.').collect();
             let thread_count = thread_counts.get(&group.name).copied();
             let last_post_date = group_stats.get(&group.name).and_then(|d| d.clone());
-            Self::insert_path(&mut root_children, &parts, &group.name, &group.description, thread_count, last_post_date);
+            Self::insert_path(&mut root_children, &mut root_map, &parts, &group.name, &group.description, thread_count, last_post_date);
         }
 
         root_children
@@ -266,6 +244,7 @@ impl GroupTreeNode {
 
     fn insert_path(
         nodes: &mut Vec<GroupTreeNode>,
+        node_map: &mut std::collections::HashMap<String, usize>,
         parts: &[&str],
         full_name: &str,
         description: &Option<String>,
@@ -279,12 +258,11 @@ impl GroupTreeNode {
         let segment = parts[0];
         let remaining = &parts[1..];
 
-        // Find or create the node for this segment
-        let node_idx = nodes.iter().position(|n| n.segment == segment);
-
-        let node = if let Some(idx) = node_idx {
-            &mut nodes[idx]
+        // Use HashMap for O(1) lookup instead of O(n) Vec scan
+        let node_idx = if let Some(&idx) = node_map.get(segment) {
+            idx
         } else {
+            let idx = nodes.len();
             nodes.push(GroupTreeNode {
                 segment: segment.to_string(),
                 full_name: None,
@@ -293,8 +271,11 @@ impl GroupTreeNode {
                 thread_count: None,
                 last_post_date: None,
             });
-            nodes.last_mut().unwrap()
+            node_map.insert(segment.to_string(), idx);
+            idx
         };
+
+        let node = &mut nodes[node_idx];
 
         if remaining.is_empty() {
             // This is a leaf node - an actual group
@@ -303,8 +284,13 @@ impl GroupTreeNode {
             node.thread_count = thread_count;
             node.last_post_date = last_post_date;
         } else {
-            // Continue down the tree
-            Self::insert_path(&mut node.children, remaining, full_name, description, thread_count, last_post_date);
+            // Continue down the tree - create a new HashMap for this level
+            let mut child_map = std::collections::HashMap::new();
+            // Build map from existing children
+            for (i, child) in node.children.iter().enumerate() {
+                child_map.insert(child.segment.clone(), i);
+            }
+            Self::insert_path(&mut node.children, &mut child_map, remaining, full_name, description, thread_count, last_post_date);
         }
     }
 
@@ -346,135 +332,497 @@ impl GroupTreeNode {
     }
 }
 
-impl From<&Thread> for ThreadView {
-    fn from(thread: &Thread) -> Self {
-        let root_view = ThreadNodeView::from(thread.root());
-        let last_post_date = find_latest_date(&root_view);
-        ThreadView {
-            subject: thread.subject().to_string(),
-            root_message_id: thread.root_message_id().to_string(),
-            article_count: thread.article_count(),
-            root: root_view,
-            last_post_date,
-        }
+/// Convert an nntp-rs Article to ArticleView
+pub fn parse_article(article: &nntp_rs::Article) -> ArticleView {
+    // Extract raw headers as string for display
+    let headers = article
+        .raw_headers()
+        .map(|h| String::from_utf8_lossy(h).to_string());
+
+    ArticleView {
+        message_id: article.article_id().to_string(),
+        subject: article.subject().unwrap_or_default(),
+        from: article.from().unwrap_or_default(),
+        date: article.date().unwrap_or_default(),
+        body: article.body_text(),
+        headers,
     }
 }
 
-/// Find the most recent date in the thread tree (iteratively)
-fn find_latest_date(root: &ThreadNodeView) -> Option<String> {
+/// Build ThreadViews from OverviewEntry data.
+/// Uses the references field to build thread structure.
+pub fn build_threads_from_overview(entries: Vec<OverviewEntry>) -> Vec<ThreadView> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    // Build a map of message_id -> OverviewEntry for quick lookup
+    let mut entries_by_id: HashMap<String, &OverviewEntry> = HashMap::new();
+    for entry in &entries {
+        if let Some(msg_id) = entry.message_id() {
+            entries_by_id.insert(msg_id.to_string(), entry);
+        }
+    }
+
+    // Group entries by thread root (first message in references chain, or self if no references)
+    let mut threads_map: HashMap<String, Vec<&OverviewEntry>> = HashMap::new();
+
+    for entry in &entries {
+        let msg_id = match entry.message_id() {
+            Some(id) => id.to_string(),
+            None => continue,
+        };
+
+        // Parse references to find thread root
+        let root_id = if let Some(refs) = entry.references() {
+            if refs.trim().is_empty() {
+                // No references - this is a root message
+                msg_id.clone()
+            } else {
+                // First reference is the thread root
+                refs.split_whitespace()
+                    .next()
+                    .unwrap_or(&msg_id)
+                    .to_string()
+            }
+        } else {
+            // No references field - this is a root message
+            msg_id.clone()
+        };
+
+        threads_map.entry(root_id).or_default().push(entry);
+    }
+
+    // Build ThreadView for each thread
+    let mut thread_views: Vec<ThreadView> = Vec::new();
+
+    for (root_id, thread_entries) in threads_map {
+        // Find the actual root entry (might not be in our entries if it's older/expired)
+        let root_entry = thread_entries.iter()
+            .find(|e| e.message_id() == Some(&root_id));
+
+        // Get subject from root entry if available, otherwise from first available entry
+        let subject = root_entry
+            .or_else(|| thread_entries.first())
+            .and_then(|e| e.subject())
+            .unwrap_or("(no subject)")
+            .to_string();
+
+        // Build the tree structure using original root_id
+        // If root article is missing, build_node_from_entry will create a node with article: None
+        let root_node = build_thread_tree(&root_id, &thread_entries, &entries_by_id);
+        let last_post_date = find_latest_date_overview(&thread_entries);
+
+        thread_views.push(ThreadView {
+            subject,
+            // Always use original root_id so thread can be found even if root article is missing
+            root_message_id: root_id,
+            article_count: thread_entries.len(),
+            root: root_node,
+            last_post_date,
+        });
+    }
+
+    thread_views
+}
+
+/// Build a ThreadNodeView tree from overview entries
+fn build_thread_tree(
+    root_id: &str,
+    entries: &[&OverviewEntry],
+    _entries_by_id: &HashMap<String, &OverviewEntry>,
+) -> ThreadNodeView {
+    // Build parent -> children map from references
+    let mut children_map: HashMap<String, Vec<&OverviewEntry>> = HashMap::new();
+
+    for entry in entries {
+        let _msg_id = match entry.message_id() {
+            Some(id) => id.to_string(),
+            None => continue,
+        };
+
+        // Find direct parent from references (last reference is direct parent)
+        let parent_id = if let Some(refs) = entry.references() {
+            if refs.trim().is_empty() {
+                None // Root message
+            } else {
+                refs.split_whitespace().last().map(|s| s.to_string())
+            }
+        } else {
+            None
+        };
+
+        if let Some(parent) = parent_id {
+            children_map.entry(parent).or_default().push(entry);
+        }
+    }
+
+    // Build tree recursively from root
+    build_node_from_entry(root_id, entries, &children_map)
+}
+
+/// Build a single node and its children
+fn build_node_from_entry(
+    msg_id: &str,
+    entries: &[&OverviewEntry],
+    children_map: &HashMap<String, Vec<&OverviewEntry>>,
+) -> ThreadNodeView {
+    // Find the entry for this message
+    let entry = entries.iter().find(|e| e.message_id() == Some(msg_id));
+
+    let article = entry.map(|e| overview_entry_to_article_view(e));
+
+    // Build child nodes
+    let mut replies: Vec<ThreadNodeView> = Vec::new();
+    if let Some(children) = children_map.get(msg_id) {
+        for child in children {
+            if let Some(child_id) = child.message_id() {
+                let child_node = build_node_from_entry(child_id, entries, children_map);
+                replies.push(child_node);
+            }
+        }
+    }
+
+    // Compute descendant count
+    let descendant_count: usize = replies.iter()
+        .map(|r| 1 + r.descendant_count)
+        .sum();
+
+    ThreadNodeView {
+        message_id: msg_id.to_string(),
+        article,
+        replies,
+        descendant_count,
+    }
+}
+
+/// Convert OverviewEntry to ArticleView
+fn overview_entry_to_article_view(entry: &OverviewEntry) -> ArticleView {
+    ArticleView {
+        message_id: entry.message_id().unwrap_or("").to_string(),
+        subject: entry.subject().unwrap_or("(no subject)").to_string(),
+        from: entry.from().unwrap_or("").to_string(),
+        date: entry.date().unwrap_or("").to_string(),
+        body: None, // Overview doesn't include body
+        headers: None,
+    }
+}
+
+/// Find the latest date from overview entries
+fn find_latest_date_overview(entries: &[&OverviewEntry]) -> Option<String> {
     use chrono::DateTime;
 
     let mut latest: Option<(String, DateTime<chrono::FixedOffset>)> = None;
-    let mut stack: Vec<&ThreadNodeView> = vec![root];
 
-    while let Some(node) = stack.pop() {
-        if let Some(ref article) = node.article {
-            // Parse RFC 2822 date for proper comparison
-            if let Ok(parsed) = DateTime::parse_from_rfc2822(&article.date) {
+    for entry in entries {
+        if let Some(date_str) = entry.date() {
+            if let Ok(parsed) = DateTime::parse_from_rfc2822(date_str) {
                 if latest.is_none() || parsed > latest.as_ref().unwrap().1 {
-                    latest = Some((article.date.clone(), parsed));
+                    latest = Some((date_str.to_string(), parsed));
                 }
             }
-        }
-        for reply in &node.replies {
-            stack.push(reply);
         }
     }
 
     latest.map(|(s, _)| s)
 }
 
-impl From<&ThreadNode> for ThreadNodeView {
-    fn from(node: &ThreadNode) -> Self {
-        thread_node_to_view(node)
+/// Merge new articles into existing threads.
+/// - Updates existing threads with new replies
+/// - Creates new threads for new root messages
+/// Returns the merged thread list.
+pub fn merge_articles_into_threads(
+    existing: &[ThreadView],
+    new_entries: Vec<OverviewEntry>,
+) -> Vec<ThreadView> {
+    if new_entries.is_empty() {
+        return existing.to_vec();
+    }
+
+    // Build lookup of existing threads by root message ID
+    let mut threads_by_root: HashMap<String, ThreadView> = existing
+        .iter()
+        .map(|t| (t.root_message_id.clone(), t.clone()))
+        .collect();
+
+    // Also build a lookup of all known message IDs to their thread root
+    let mut msg_to_root: HashMap<String, String> = HashMap::new();
+    for thread in existing {
+        collect_message_ids_to_root(&thread.root, &thread.root_message_id, &mut msg_to_root);
+    }
+
+    // Group new entries by which thread they belong to
+    let mut updates_by_thread: HashMap<String, Vec<&OverviewEntry>> = HashMap::new();
+    let mut new_roots: Vec<&OverviewEntry> = Vec::new();
+
+    for entry in &new_entries {
+        let msg_id = match entry.message_id() {
+            Some(id) => id.to_string(),
+            None => continue,
+        };
+
+        // Check if this message references a known message
+        let thread_root = if let Some(refs) = entry.references() {
+            refs.split_whitespace()
+                .find_map(|ref_id| msg_to_root.get(ref_id).cloned())
+        } else {
+            None
+        };
+
+        if let Some(root_id) = thread_root {
+            updates_by_thread.entry(root_id).or_default().push(entry);
+            msg_to_root.insert(msg_id, updates_by_thread.keys().last().unwrap().clone());
+        } else {
+            // Check if this is a known root
+            if threads_by_root.contains_key(&msg_id) {
+                updates_by_thread.entry(msg_id.clone()).or_default().push(entry);
+            } else {
+                // New thread
+                new_roots.push(entry);
+            }
+        }
+    }
+
+    // Update existing threads with new entries
+    for (root_id, entries) in updates_by_thread {
+        if let Some(thread) = threads_by_root.get_mut(&root_id) {
+            // Add new entries to the thread
+            for entry in &entries {
+                if let Some(msg_id) = entry.message_id() {
+                    let new_node = ThreadNodeView {
+                        message_id: msg_id.to_string(),
+                        article: Some(overview_entry_to_article_view(entry)),
+                        replies: Vec::new(),
+                        descendant_count: 0,
+                    };
+
+                    // Find parent in references and add as child
+                    if let Some(refs) = entry.references() {
+                        let parent_id = refs.split_whitespace().last();
+                        if let Some(parent) = parent_id {
+                            add_reply_to_node(&mut thread.root, parent, new_node);
+                        }
+                    }
+                }
+            }
+
+            // Update article count and last post date
+            thread.article_count += entries.len();
+            if let last_date @ Some(_) = find_latest_date_overview(&entries) {
+                thread.last_post_date = last_date;
+            }
+        }
+    }
+
+    // Build new threads from new roots
+    let new_thread_entries: Vec<OverviewEntry> = new_roots.iter().map(|e| (*e).clone()).collect();
+    let new_threads = build_threads_from_overview(new_thread_entries);
+
+    // Combine existing (updated) and new threads
+    let mut result: Vec<ThreadView> = threads_by_root.into_values().collect();
+    result.extend(new_threads);
+
+    result
+}
+
+/// Collect all message IDs in a thread tree and map them to the root
+fn collect_message_ids_to_root(
+    node: &ThreadNodeView,
+    root_id: &str,
+    map: &mut HashMap<String, String>,
+) {
+    map.insert(node.message_id.clone(), root_id.to_string());
+    for reply in &node.replies {
+        collect_message_ids_to_root(reply, root_id, map);
     }
 }
 
-/// Convert ThreadNode to ThreadNodeView iteratively (no depth limit).
-/// We use iteration instead of recursion to handle arbitrarily deep threads.
-fn thread_node_to_view(root: &ThreadNode) -> ThreadNodeView {
-    // Stack: (source node, built replies for parent)
-    let mut stack: Vec<(&ThreadNode, Vec<ThreadNodeView>)> = vec![(root, Vec::new())];
-    let mut result: Option<ThreadNodeView> = None;
+/// Add a reply node to the appropriate parent in the tree
+fn add_reply_to_node(
+    node: &mut ThreadNodeView,
+    parent_id: &str,
+    new_reply: ThreadNodeView,
+) -> bool {
+    if node.message_id == parent_id {
+        node.replies.push(new_reply);
+        // Update descendant count
+        node.descendant_count += 1;
+        return true;
+    }
 
-    while let Some((node, built_replies)) = stack.pop() {
-        let children_to_process = node.replies.len();
+    for reply in &mut node.replies {
+        if add_reply_to_node(reply, parent_id, new_reply.clone()) {
+            // Update ancestor's descendant count
+            node.descendant_count += 1;
+            return true;
+        }
+    }
 
-        if built_replies.len() == children_to_process {
-            // All children processed, create this node
-            let new_node = ThreadNodeView {
-                message_id: node.message_id.clone(),
-                article: node.article.as_ref().map(ArticleView::from),
-                replies: built_replies,
-            };
+    false
+}
 
-            // Add to parent's replies or set as result
-            if let Some((parent_node, mut parent_replies)) = stack.pop() {
-                parent_replies.push(new_node);
-                stack.push((parent_node, parent_replies));
+/// Article data collected from HDR commands
+#[derive(Debug, Clone)]
+pub struct HdrArticleData {
+    pub article_number: u64,
+    pub message_id: String,
+    pub references: Option<String>,
+    pub subject: String,
+    pub from: String,
+    pub date: String,
+}
+
+/// Build ThreadViews from HDR-collected article data.
+/// Uses the references field to build thread structure.
+pub fn build_threads_from_hdr(articles: Vec<HdrArticleData>) -> Vec<ThreadView> {
+    if articles.is_empty() {
+        return Vec::new();
+    }
+
+    // Build a map of message_id -> HdrArticleData for quick lookup
+    let mut articles_by_id: HashMap<String, &HdrArticleData> = HashMap::new();
+    for article in &articles {
+        articles_by_id.insert(article.message_id.clone(), article);
+    }
+
+    // Group articles by thread root (first message in references chain, or self if no references)
+    let mut threads_map: HashMap<String, Vec<&HdrArticleData>> = HashMap::new();
+
+    for article in &articles {
+        // Parse references to find thread root
+        let root_id = if let Some(refs) = &article.references {
+            if refs.trim().is_empty() {
+                // No references - this is a root message
+                article.message_id.clone()
             } else {
-                result = Some(new_node);
+                // First reference is the thread root
+                refs.split_whitespace()
+                    .next()
+                    .unwrap_or(&article.message_id)
+                    .to_string()
             }
         } else {
-            // More children to process
-            let next_idx = built_replies.len();
-            stack.push((node, built_replies));
-            stack.push((&node.replies[next_idx], Vec::new()));
+            // No references field - this is a root message
+            article.message_id.clone()
+        };
+
+        threads_map.entry(root_id).or_default().push(article);
+    }
+
+    // Build ThreadView for each thread
+    let mut thread_views: Vec<ThreadView> = Vec::new();
+
+    for (root_id, thread_articles) in threads_map {
+        // Find the actual root article (might not be in our articles if it's older/expired)
+        let root_article = thread_articles
+            .iter()
+            .find(|a| a.message_id == root_id);
+
+        // Get subject from root article if available, otherwise from first available article
+        let subject = root_article
+            .or_else(|| thread_articles.first())
+            .map(|a| a.subject.clone())
+            .unwrap_or_else(|| "(no subject)".to_string());
+
+        // Build the tree structure using original root_id
+        // If root article is missing, build_node_from_hdr will create a node with article: None
+        let root_node = build_thread_tree_hdr(&root_id, &thread_articles, &articles_by_id);
+        let last_post_date = find_latest_date_hdr(&thread_articles);
+
+        thread_views.push(ThreadView {
+            subject,
+            // Always use original root_id so thread can be found even if root article is missing
+            root_message_id: root_id,
+            article_count: thread_articles.len(),
+            root: root_node,
+            last_post_date,
+        });
+    }
+
+    thread_views
+}
+
+/// Build a ThreadNodeView tree from HDR article data
+fn build_thread_tree_hdr(
+    root_id: &str,
+    articles: &[&HdrArticleData],
+    _articles_by_id: &HashMap<String, &HdrArticleData>,
+) -> ThreadNodeView {
+    // Build parent -> children map from references
+    let mut children_map: HashMap<String, Vec<&HdrArticleData>> = HashMap::new();
+
+    for article in articles {
+        // Find direct parent from references (last reference is direct parent)
+        let parent_id = if let Some(refs) = &article.references {
+            if refs.trim().is_empty() {
+                None // Root message
+            } else {
+                refs.split_whitespace().last().map(|s| s.to_string())
+            }
+        } else {
+            None
+        };
+
+        if let Some(parent) = parent_id {
+            children_map.entry(parent).or_default().push(article);
         }
     }
 
-    result.unwrap_or_else(|| ThreadNodeView {
-        message_id: root.message_id.clone(),
-        article: root.article.as_ref().map(ArticleView::from),
-        replies: Vec::new(),
-    })
+    // Build tree recursively from root
+    build_node_from_hdr(root_id, articles, &children_map)
 }
 
-impl From<&ThreadedArticleRef> for ArticleView {
-    fn from(article: &ThreadedArticleRef) -> Self {
-        ArticleView {
-            message_id: article.message_id.clone(),
-            subject: article.subject.clone(),
-            from: article.from.clone(),
-            // date is a String field
-            date: article.date.clone(),
-            body: None,
-            headers: None,
+/// Build a single node and its children from HDR data
+fn build_node_from_hdr(
+    msg_id: &str,
+    articles: &[&HdrArticleData],
+    children_map: &HashMap<String, Vec<&HdrArticleData>>,
+) -> ThreadNodeView {
+    // Find the article for this message
+    let article = articles.iter().find(|a| a.message_id == msg_id);
+
+    let article_view = article.map(|a| ArticleView {
+        message_id: a.message_id.clone(),
+        subject: a.subject.clone(),
+        from: a.from.clone(),
+        date: a.date.clone(),
+        body: None, // HDR doesn't include body
+        headers: None,
+    });
+
+    // Build child nodes
+    let mut replies: Vec<ThreadNodeView> = Vec::new();
+    if let Some(children) = children_map.get(msg_id) {
+        for child in children {
+            let child_node = build_node_from_hdr(&child.message_id, articles, children_map);
+            replies.push(child_node);
         }
+    }
+
+    // Compute descendant count
+    let descendant_count: usize = replies.iter().map(|r| 1 + r.descendant_count).sum();
+
+    ThreadNodeView {
+        message_id: msg_id.to_string(),
+        article: article_view,
+        replies,
+        descendant_count,
     }
 }
 
-impl From<&FetchedArticle> for ArticleView {
-    fn from(article: &FetchedArticle) -> Self {
-        // Extract raw headers from the article content
-        let headers = extract_headers(article.raw_content());
+/// Find the latest date from HDR article data
+fn find_latest_date_hdr(articles: &[&HdrArticleData]) -> Option<String> {
+    use chrono::DateTime;
 
-        ArticleView {
-            message_id: article.message_id().to_string(),
-            subject: article.subject().to_string(),
-            from: article.from().to_string(),
-            date: article.date().to_string(),
-            // body_text() returns Option<String>
-            body: article.body_text(),
-            headers,
+    let mut latest: Option<(String, DateTime<chrono::FixedOffset>)> = None;
+
+    for article in articles {
+        if let Ok(parsed) = DateTime::parse_from_rfc2822(&article.date) {
+            if latest.is_none() || parsed > latest.as_ref().unwrap().1 {
+                latest = Some((article.date.clone(), parsed));
+            }
         }
     }
-}
 
-/// Extract headers from raw article content (everything before the blank line)
-fn extract_headers(content: &[u8]) -> Option<String> {
-    let content_str = String::from_utf8_lossy(content);
-
-    // Find the blank line that separates headers from body
-    // NNTP uses CRLF, but we handle both cases
-    let header_end = content_str
-        .find("\r\n\r\n")
-        .or_else(|| content_str.find("\n\n"))?;
-
-    Some(content_str[..header_end].to_string())
-}
-
-/// Convert a ThreadCollection to a Vec of ThreadViews
-pub fn threads_to_views(threads: &ThreadCollection) -> Vec<ThreadView> {
-    threads.iter().map(ThreadView::from).collect()
+    latest.map(|(s, _)| s)
 }

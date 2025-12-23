@@ -5,6 +5,8 @@
 
 use tokio::sync::oneshot;
 
+use nntp_rs::OverviewEntry;
+
 use super::{ArticleView, GroupView, ThreadView};
 
 /// Error type for NNTP operations that can be sent across channels
@@ -26,6 +28,8 @@ pub struct GroupStatsView {
     pub article_count: u64,
     /// Date of the last article (RFC 2822 format)
     pub last_article_date: Option<String>,
+    /// Last article number (high water mark for incremental updates)
+    pub last_article_number: u64,
 }
 
 /// Request messages sent to NNTP workers
@@ -55,6 +59,12 @@ pub enum NntpRequest {
     GetGroupStats {
         group: String,
         response: oneshot::Sender<Result<GroupStatsView, NntpError>>,
+    },
+    /// Fetch new articles since a given article number (for incremental updates)
+    GetNewArticles {
+        group: String,
+        since_article_number: u64,
+        response: oneshot::Sender<Result<Vec<OverviewEntry>, NntpError>>,
     },
 }
 
@@ -97,6 +107,13 @@ impl NntpRequest {
                     let _ = response.send(Err(e));
                 }
             }
+            NntpRequest::GetNewArticles { response, .. } => {
+                if let Ok(NntpResponse::NewArticles(entries)) = result {
+                    let _ = response.send(Ok(entries));
+                } else if let Err(e) = result {
+                    let _ = response.send(Err(e));
+                }
+            }
         }
     }
 }
@@ -108,4 +125,5 @@ pub enum NntpResponse {
     Thread(ThreadView),
     Article(ArticleView),
     GroupStats(GroupStatsView),
+    NewArticles(Vec<OverviewEntry>),
 }

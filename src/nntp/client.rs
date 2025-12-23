@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
-use tokio::time::timeout;
 
+use async_channel::{bounded, Receiver, Sender};
+use tokio::time::timeout;
 use nntp_rs::runtime::tokio::NntpClient;
 use nntp_rs::threading::{FetchedArticle, NntpClientThreadingExt, ThreadCollection};
 use nntp_rs::ListVariant;
@@ -10,34 +10,45 @@ use nntp_rs::ListVariant;
 use crate::config::NntpConfig;
 use crate::error::AppError;
 
-/// Connection pool for NNTP clients
+/// Maximum number of idle connections to keep in the pool
+const MAX_POOL_SIZE: usize = 5;
+
+/// Connection pool for NNTP clients using lock-free async channels
 #[derive(Clone)]
 pub struct NntpPool {
     config: Arc<NntpConfig>,
-    connections: Arc<Mutex<Vec<NntpClient>>>,
+    /// Sender for returning connections to the pool
+    pool_tx: Sender<NntpClient>,
+    /// Receiver for getting connections from the pool
+    pool_rx: Receiver<NntpClient>,
 }
 
 impl NntpPool {
     pub fn new(config: NntpConfig) -> Self {
+        // Create a bounded channel with capacity for max pool size
+        // This provides natural backpressure and limits pool growth
+        let (pool_tx, pool_rx) = bounded(MAX_POOL_SIZE);
         Self {
             config: Arc::new(config),
-            connections: Arc::new(Mutex::new(Vec::new())),
+            pool_tx,
+            pool_rx,
         }
     }
 
     /// Get a client from the pool or create a new one
     pub async fn get(&self) -> Result<PooledClient, AppError> {
-        let mut pool = self.connections.lock().await;
-
-        let client = if let Some(client) = pool.pop() {
-            client
-        } else {
-            self.create_client().await?
+        // Try to get an existing connection from the pool (non-blocking)
+        let client = match self.pool_rx.try_recv() {
+            Ok(client) => client,
+            Err(_) => {
+                // No connection available, create a new one
+                self.create_client().await?
+            }
         };
 
         Ok(PooledClient {
             client: Some(client),
-            pool: self.connections.clone(),
+            pool_tx: self.pool_tx.clone(),
         })
     }
 
@@ -61,7 +72,7 @@ impl NntpPool {
 /// RAII wrapper that returns connection to pool on drop
 pub struct PooledClient {
     client: Option<NntpClient>,
-    pool: Arc<Mutex<Vec<NntpClient>>>,
+    pool_tx: Sender<NntpClient>,
 }
 
 impl PooledClient {
@@ -108,14 +119,9 @@ impl PooledClient {
 impl Drop for PooledClient {
     fn drop(&mut self) {
         if let Some(client) = self.client.take() {
-            let pool = self.pool.clone();
-            tokio::spawn(async move {
-                let mut pool = pool.lock().await;
-                // Keep pool size reasonable
-                if pool.len() < 5 {
-                    pool.push(client);
-                }
-            });
+            // Use try_send which is non-blocking and doesn't require async
+            // If the channel is full (pool at capacity), the connection is dropped
+            let _ = self.pool_tx.try_send(client);
         }
     }
 }

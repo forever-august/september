@@ -16,9 +16,19 @@ use tokio::sync::{broadcast, RwLock};
 use crate::config::{AppConfig, CacheConfig};
 use crate::error::AppError;
 
+use nntp_rs::OverviewEntry;
+
 use super::messages::GroupStatsView;
 use super::service::NntpService;
-use super::{ArticleView, FlatComment, GroupView, PaginationInfo, ThreadView};
+use super::{merge_articles_into_threads, ArticleView, FlatComment, GroupView, PaginationInfo, ThreadView};
+
+/// Cached thread data with high water mark for incremental updates
+#[derive(Clone)]
+struct CachedThreads {
+    threads: Vec<ThreadView>,
+    /// Last article number when this cache was populated (high water mark)
+    last_article_number: u64,
+}
 
 /// Federated NNTP Service that presents multiple servers as one unified source
 #[derive(Clone)]
@@ -28,8 +38,11 @@ pub struct NntpFederatedService {
 
     /// Cache for individual articles
     article_cache: Cache<String, ArticleView>,
-    /// Cache for thread lists (key: "group:count")
-    threads_cache: Cache<String, Vec<ThreadView>>,
+    /// Cache for not-found articles (negative cache with short TTL)
+    article_not_found_cache: Cache<String, ()>,
+    /// Cache for thread lists (key: group name)
+    /// Stores threads with high water mark for incremental updates
+    threads_cache: Cache<String, CachedThreads>,
     /// Cache for single threads (key: "group:message_id")
     thread_cache: Cache<String, ThreadView>,
     /// Cache for group list (merged from all servers)
@@ -43,6 +56,9 @@ pub struct NntpFederatedService {
 
     /// Pending group stats requests for coalescing at federated level
     pending_group_stats: Arc<RwLock<HashMap<String, broadcast::Sender<Result<GroupStatsView, String>>>>>,
+
+    /// Maximum number of articles to fetch per group (from config)
+    max_articles_per_group: u64,
 }
 
 impl NntpFederatedService {
@@ -56,11 +72,19 @@ impl NntpFederatedService {
             })
             .collect();
 
-        Self::with_services(services, &config.cache)
+        Self::with_services(
+            services,
+            &config.cache,
+            config.nntp.defaults.max_articles_per_group,
+        )
     }
 
     /// Create a federated service with explicit services and cache config
-    pub fn with_services(services: Vec<NntpService>, cache_config: &CacheConfig) -> Self {
+    pub fn with_services(
+        services: Vec<NntpService>,
+        cache_config: &CacheConfig,
+        max_articles_per_group: u64,
+    ) -> Self {
         // Build caches with TTL and size limits
         let article_cache = Cache::builder()
             .max_capacity(cache_config.max_articles)
@@ -83,19 +107,27 @@ impl NntpFederatedService {
             .build();
 
         let group_stats_cache = Cache::builder()
-            .max_capacity(cache_config.max_thread_lists) // One per group
+            .max_capacity(cache_config.max_group_stats)
             .time_to_live(Duration::from_secs(cache_config.threads_ttl_seconds))
+            .build();
+
+        // Negative cache for not-found articles with short TTL (30 seconds)
+        let article_not_found_cache = Cache::builder()
+            .max_capacity(cache_config.max_articles / 4) // Quarter the size of positive cache
+            .time_to_live(Duration::from_secs(30))
             .build();
 
         Self {
             services,
             article_cache,
+            article_not_found_cache,
             threads_cache,
             thread_cache,
             groups_cache,
             group_stats_cache,
             group_servers: Arc::new(RwLock::new(HashMap::new())),
             pending_group_stats: Arc::new(RwLock::new(HashMap::new())),
+            max_articles_per_group,
         }
     }
 
@@ -131,21 +163,41 @@ impl NntpFederatedService {
         }
     }
 
+    /// Check if an error indicates a definitive "not found" condition
+    /// Returns true for errors that should be negatively cached
+    fn is_not_found_error(error: &super::messages::NntpError) -> bool {
+        let error_msg = error.0.to_lowercase();
+        // NNTP 430 = "No such article"
+        // NNTP 423 = "No such article in this group"
+        error_msg.contains("430")
+            || error_msg.contains("423")
+            || error_msg.contains("no such article")
+            || error_msg.contains("article not found")
+    }
+
     /// Fetch an article by message ID
     /// Tries each server in order until the article is found
     pub async fn get_article(&self, message_id: &str) -> Result<ArticleView, AppError> {
-        // Check cache first
+        // Check positive cache first
         if let Some(article) = self.article_cache.get(message_id).await {
             tracing::debug!(%message_id, "Article cache hit");
             return Ok(article);
         }
 
+        // Check negative cache - if we recently determined this article doesn't exist, fail fast
+        if self.article_not_found_cache.get(message_id).await.is_some() {
+            tracing::debug!(%message_id, "Article negative cache hit - not found");
+            return Err(AppError::ArticleNotFound(message_id.to_string()));
+        }
+
         // Try each server in priority order
         let mut last_error = None;
+        let mut all_not_found = true;
+
         for service in &self.services {
             match service.get_article(message_id).await {
                 Ok(article) => {
-                    // Cache and return
+                    // Cache positive result and return
                     self.article_cache
                         .insert(message_id.to_string(), article.clone())
                         .await;
@@ -163,27 +215,101 @@ impl NntpFederatedService {
                         error = %e,
                         "Article not found on server, trying next"
                     );
+
+                    // Track if we've seen any non-"not found" errors
+                    if !Self::is_not_found_error(&e) {
+                        all_not_found = false;
+                    }
+
                     last_error = Some(e);
                 }
             }
         }
 
-        // All servers failed
+        // All servers failed - cache negative result if all errors were "not found"
+        if all_not_found {
+            tracing::debug!(
+                %message_id,
+                "All servers returned 'not found' - caching negative result"
+            );
+            self.article_not_found_cache
+                .insert(message_id.to_string(), ())
+                .await;
+            return Err(AppError::ArticleNotFound(message_id.to_string()));
+        }
+
+        // Had some transient errors - don't cache, just return the error
         Err(last_error
             .map(|e| AppError::Internal(e.0))
             .unwrap_or_else(|| AppError::Internal("No NNTP servers configured".into())))
     }
 
-    /// Fetch recent threads from a newsgroup
-    /// Tries only servers known to carry the group (or all servers if group is unknown)
-    pub async fn get_threads(&self, group: &str, count: u64) -> Result<Vec<ThreadView>, AppError> {
-        let cache_key = format!("{}:{}", group, count);
+    /// Fetch recent threads from a newsgroup with incremental update support.
+    /// On cache hit, checks for new articles and fetches only the delta.
+    /// The count parameter is ignored; uses max_articles_per_group from config.
+    pub async fn get_threads(&self, group: &str, _count: u64) -> Result<Vec<ThreadView>, AppError> {
+        let cache_key = group.to_string();
+        let max_articles = self.max_articles_per_group;
 
         // Check cache first
-        if let Some(threads) = self.threads_cache.get(&cache_key).await {
-            tracing::debug!(%group, %count, "Threads cache hit");
-            return Ok(threads);
+        if let Some(cached) = self.threads_cache.get(&cache_key).await {
+            // Cache hit - check for new articles (incremental update)
+            tracing::debug!(
+                %group,
+                last_article = cached.last_article_number,
+                "Threads cache hit, checking for new articles"
+            );
+
+            // Try to get new articles since our cached high water mark
+            match self.get_new_articles(group, cached.last_article_number).await {
+                Ok(new_entries) if new_entries.is_empty() => {
+                    // No new articles
+                    tracing::debug!(%group, "No new articles since last fetch");
+                    return Ok(cached.threads);
+                }
+                Ok(new_entries) => {
+                    // Merge new articles into existing threads
+                    let new_hwm = new_entries.iter()
+                        .filter_map(|e| e.number())
+                        .max()
+                        .unwrap_or(cached.last_article_number);
+
+                    let merged = merge_articles_into_threads(&cached.threads, new_entries);
+
+                    tracing::debug!(
+                        %group,
+                        old_hwm = cached.last_article_number,
+                        new_hwm,
+                        old_thread_count = cached.threads.len(),
+                        new_thread_count = merged.len(),
+                        "Merged new articles into threads"
+                    );
+
+                    // Update cache with merged data
+                    self.threads_cache.insert(
+                        cache_key,
+                        CachedThreads {
+                            threads: merged.clone(),
+                            last_article_number: new_hwm,
+                        },
+                    ).await;
+
+                    return Ok(merged);
+                }
+                Err(e) => {
+                    // Failed to check for new articles, return cached data
+                    tracing::warn!(
+                        %group,
+                        error = %e,
+                        "Failed to fetch new articles, returning cached data"
+                    );
+                    return Ok(cached.threads);
+                }
+            }
         }
+
+        // Cache miss - full fetch
+        tracing::debug!(%group, max_articles, "Threads cache miss, doing full fetch");
 
         // Get servers for this group (smart dispatch)
         let server_indices = self.get_servers_for_group(group).await;
@@ -192,15 +318,27 @@ impl NntpFederatedService {
         let mut last_error = None;
         for idx in server_indices {
             let service = &self.services[idx];
-            match service.get_threads(group, count).await {
+            match service.get_threads(group, max_articles).await {
                 Ok(threads) => {
-                    // Cache and return
-                    self.threads_cache.insert(cache_key, threads.clone()).await;
+                    // Get the high water mark from group stats
+                    let last_article_number = self.get_last_article_number(group).await
+                        .unwrap_or(0);
+
+                    // Cache with high water mark
+                    self.threads_cache.insert(
+                        cache_key,
+                        CachedThreads {
+                            threads: threads.clone(),
+                            last_article_number,
+                        },
+                    ).await;
+
                     tracing::debug!(
                         %group,
-                        %count,
+                        max_articles,
                         server = %service.name(),
                         thread_count = threads.len(),
+                        last_article_number,
                         "Threads fetched from server"
                     );
                     return Ok(threads);
@@ -223,6 +361,61 @@ impl NntpFederatedService {
             .unwrap_or_else(|| AppError::Internal("Group not found on any server".into())))
     }
 
+    /// Fetch new articles since a given article number (for incremental updates)
+    async fn get_new_articles(
+        &self,
+        group: &str,
+        since_article_number: u64,
+    ) -> Result<Vec<OverviewEntry>, AppError> {
+        // Get servers for this group
+        let server_indices = self.get_servers_for_group(group).await;
+
+        let mut last_error = None;
+        for idx in server_indices {
+            let service = &self.services[idx];
+            match service.get_new_articles(group, since_article_number).await {
+                Ok(entries) => {
+                    tracing::debug!(
+                        %group,
+                        since_article_number,
+                        server = %service.name(),
+                        entry_count = entries.len(),
+                        "New articles fetched from server"
+                    );
+                    return Ok(entries);
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        %group,
+                        server = %service.name(),
+                        error = %e,
+                        "Failed to get new articles from server, trying next"
+                    );
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error
+            .map(|e| AppError::Internal(e.0))
+            .unwrap_or_else(|| AppError::Internal("Failed to fetch new articles".into())))
+    }
+
+    /// Get the last article number for a group (from group stats)
+    async fn get_last_article_number(&self, group: &str) -> Option<u64> {
+        // Get servers for this group
+        let server_indices = self.get_servers_for_group(group).await;
+
+        for idx in server_indices {
+            let service = &self.services[idx];
+            if let Ok(stats) = service.get_group_stats(group).await {
+                return Some(stats.last_article_number);
+            }
+        }
+
+        None
+    }
+
     /// Fetch paginated threads from a newsgroup.
     /// Fetches a larger batch and returns the requested page slice.
     /// Threads are sorted in reverse-chronological order by last reply date.
@@ -232,26 +425,37 @@ impl NntpFederatedService {
         page: usize,
         per_page: usize,
     ) -> Result<(Vec<ThreadView>, PaginationInfo), AppError> {
-        // Fetch a larger batch to enable pagination (e.g., 500 threads)
-        const MAX_FETCH: u64 = 500;
-
-        let mut all_threads = self.get_threads(group, MAX_FETCH).await?;
+        // Fetch using configured max_articles_per_group
+        let mut all_threads = self.get_threads(group, self.max_articles_per_group).await?;
 
         // Sort threads by last_post_date in reverse-chronological order (newest first)
-        // Parse RFC 2822 dates for proper comparison
-        all_threads.sort_by(|a, b| {
-            let a_parsed = a.last_post_date.as_ref()
-                .and_then(|d| DateTime::parse_from_rfc2822(d).ok());
-            let b_parsed = b.last_post_date.as_ref()
-                .and_then(|d| DateTime::parse_from_rfc2822(d).ok());
-            
+        // Pre-parse RFC 2822 dates once to avoid O(N log N) parsing overhead
+        let mut indexed_threads: Vec<(usize, Option<DateTime<chrono::FixedOffset>>)> = all_threads
+            .iter()
+            .enumerate()
+            .map(|(i, thread)| {
+                let parsed = thread.last_post_date.as_ref()
+                    .and_then(|d| DateTime::parse_from_rfc2822(d).ok());
+                (i, parsed)
+            })
+            .collect();
+
+        // Sort indices based on pre-parsed dates
+        indexed_threads.sort_by(|(_, a_parsed), (_, b_parsed)| {
             match (b_parsed, a_parsed) {
-                (Some(b_dt), Some(a_dt)) => b_dt.cmp(&a_dt),
+                (Some(b_dt), Some(a_dt)) => b_dt.cmp(a_dt),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => std::cmp::Ordering::Equal,
             }
         });
+
+        // Reorder original vector based on sorted indices
+        let sorted_threads: Vec<ThreadView> = indexed_threads
+            .into_iter()
+            .map(|(i, _)| all_threads[i].clone())
+            .collect();
+        all_threads = sorted_threads;
 
         let total = all_threads.len();
         let pagination = PaginationInfo::new(page, total, per_page);
@@ -347,9 +551,22 @@ impl NntpFederatedService {
             }
         }
 
-        // Fetch missing bodies
-        for msg_id in needed_ids {
-            match self.get_article(&msg_id).await {
+        // Fetch missing bodies concurrently across the worker pool
+        // Map each message ID to a fetch future
+        let fetch_futures: Vec<_> = needed_ids
+            .into_iter()
+            .map(|msg_id| async move {
+                let result = self.get_article(&msg_id).await;
+                (msg_id, result)
+            })
+            .collect();
+
+        // Execute all fetches concurrently and collect results
+        let fetch_results = futures::future::join_all(fetch_futures).await;
+
+        // Process results and populate the bodies map
+        for (msg_id, result) in fetch_results {
+            match result {
                 Ok(article) => {
                     bodies.insert(msg_id, article);
                 }
@@ -458,6 +675,8 @@ impl NntpFederatedService {
             return Ok(stats);
         }
 
+        tracing::debug!(%group, "Group stats cache miss");
+
         // Check for pending request (coalesce if one is already in flight)
         {
             let pending = self.pending_group_stats.read().await;
@@ -549,15 +768,29 @@ impl NntpFederatedService {
         }
     }
 
+    /// Check if group stats are cached (non-blocking, does not fetch)
+    pub async fn get_cached_group_stats(&self, group: &str) -> Option<GroupStatsView> {
+        self.group_stats_cache.get(group).await
+    }
+
+    /// Spawn background tasks to prefetch group stats (fire-and-forget).
+    /// Groups that are already cached or have pending requests are handled
+    /// efficiently by the existing get_group_stats coalescing logic.
+    pub fn prefetch_group_stats(&self, groups: Vec<String>) {
+        for group in groups {
+            let this = self.clone();
+            tokio::spawn(async move {
+                // get_group_stats handles caching and request coalescing
+                let _ = this.get_group_stats(&group).await;
+            });
+        }
+    }
+
     /// Get cached thread count for a group from the threads cache.
     /// Returns None if threads haven't been fetched for this group.
     async fn get_cached_thread_count(&self, group: &str) -> Option<usize> {
-        // Check various cache keys that could contain this group's threads
-        for count in [500u64, 100, 50, 25, 20, 10] {
-            let cache_key = format!("{}:{}", group, count);
-            if let Some(threads) = self.threads_cache.get(&cache_key).await {
-                return Some(threads.len());
-            }
+        if let Some(cached) = self.threads_cache.get(group).await {
+            return Some(cached.threads.len());
         }
         None
     }

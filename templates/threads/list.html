@@ -14,7 +14,7 @@
 
 <div class="thread-list">
     {% for thread in threads %}
-    <a href="/g/{{ group }}/{% if thread.article_count == 1 %}article{% else %}thread{% endif %}/{{ thread.root_message_id | urlencode_strict }}" class="thread-card-link">
+    <a href="{% if thread.article_count == 1 %}/a/{{ thread.root_message_id | urlencode_strict }}?back=/g/{{ group }}{% else %}/g/{{ group }}/thread/{{ thread.root_message_id | urlencode_strict }}{% endif %}" class="thread-card-link">
         <div class="thread-card">
             <div class="thread-content">
                 <h2 class="thread-title">{{ thread.subject }}</h2>

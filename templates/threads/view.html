@@ -31,7 +31,7 @@
              {% if comment.starts_collapsed %}data-collapsed="true"{% endif %}>
             {% if comment.article %}
             <div class="comment-header">
-                <a href="/g/{{ group }}/article/{{ comment.message_id | urlencode_strict }}" class="comment-title">
+                <a href="/a/{{ comment.message_id | urlencode_strict }}?back=/g/{{ group }}/thread/{{ thread.root_message_id | urlencode_strict }}{% if pagination.current_page > 1 %}%3Fpage%3D{{ pagination.current_page }}{% endif %}" class="comment-title">
                     {{ comment.article.subject }}
                 </a>
                 <div class="comment-meta">
@@ -44,7 +44,7 @@
                 {% if comment.article.body %}
                 <pre class="article-text article-preview">{{ comment.article.body | preview(lines=10) }}</pre>
                 {% if comment.article.body | has_more_lines(lines=10) %}
-                <a href="/g/{{ group }}/article/{{ comment.message_id | urlencode_strict }}" class="read-more">Read more</a>
+                <a href="/a/{{ comment.message_id | urlencode_strict }}?back=/g/{{ group }}/thread/{{ thread.root_message_id | urlencode_strict }}{% if pagination.current_page > 1 %}%3Fpage%3D{{ pagination.current_page }}{% endif %}" class="read-more">Read more</a>
                 {% endif %}
                 {% else %}
                 <p class="no-content">Article content not available.</p>

@@ -44,6 +44,8 @@
                 {% endif %}
                 {% if node.last_post_date %}
                 <span class="last-post">last post {{ node.last_post_date | timeago }}</span>
+                {% else %}
+                <span class="loading-stats">...</span>
                 {% endif %}
             </span>
             {% endif %}
@@ -63,6 +65,8 @@
                 {% endif %}
                 {% if node.last_post_date %}
                 <span class="last-post">last post {{ node.last_post_date | timeago }}</span>
+                {% elif node.full_name %}
+                <span class="loading-stats">...</span>
                 {% endif %}
             </span>
         </a>

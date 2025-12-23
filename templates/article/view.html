@@ -5,7 +5,7 @@
 {% block content %}
 <article class="article-view">
     <header class="article-header">
-        <a href="/g/{{ group }}" class="back-link">&larr; Back to {{ group }}</a>
+        <a href="{{ back_url }}" class="back-link">&larr; {{ back_label }}</a>
         <h1>{{ article.subject }}</h1>
         <div class="article-meta">
             <span class="author">{{ article.from }}</span>

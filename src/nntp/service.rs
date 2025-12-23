@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 use async_channel::{Receiver, Sender};
 use tokio::sync::{broadcast, oneshot, Mutex};
 
+use nntp_rs::OverviewEntry;
+
 use crate::config::{NntpServerConfig, NntpSettings};
 
 use super::messages::{GroupStatsView, NntpError, NntpRequest};
@@ -20,12 +22,23 @@ use super::{ArticleView, GroupView, ThreadView};
 /// Pending request with timestamp for timeout checking
 type PendingEntry<T> = (broadcast::Sender<Result<T, NntpError>>, Instant);
 
+/// Arc-wrapped pending entry for large types to avoid cloning on broadcast
+type ArcPendingEntry<T> = (broadcast::Sender<Result<Arc<T>, NntpError>>, Instant);
+
+/// Unwrap Arc, returning owned value if unique or cloning if shared
+fn unwrap_arc<T: Clone>(arc: Arc<T>) -> T {
+    Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone())
+}
+
 /// Pending request tracking for coalescing
 struct PendingRequests {
     articles: Mutex<HashMap<String, PendingEntry<ArticleView>>>,
-    threads: Mutex<HashMap<String, PendingEntry<Vec<ThreadView>>>>,
-    thread: Mutex<HashMap<String, PendingEntry<ThreadView>>>,
-    groups: Mutex<Option<PendingEntry<Vec<GroupView>>>>,
+    /// Arc-wrapped to avoid cloning Vec<ThreadView> on broadcast
+    threads: Mutex<HashMap<String, ArcPendingEntry<Vec<ThreadView>>>>,
+    /// Arc-wrapped to avoid cloning ThreadView on broadcast
+    thread: Mutex<HashMap<String, ArcPendingEntry<ThreadView>>>,
+    /// Arc-wrapped to avoid cloning Vec<GroupView> on broadcast
+    groups: Mutex<Option<ArcPendingEntry<Vec<GroupView>>>>,
     group_stats: Mutex<HashMap<String, PendingEntry<GroupStatsView>>>,
 }
 
@@ -134,21 +147,14 @@ impl NntpService {
         // Wait for result with timeout
         let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                self.pending.articles.lock().await.remove(message_id);
-                return Err(NntpError("Worker dropped request".into()));
-            }
-            Err(_) => {
-                self.pending.articles.lock().await.remove(message_id);
-                return Err(NntpError("Request timeout".into()));
-            }
+            Ok(Err(_)) => Err(NntpError("Worker dropped request".into())),
+            Err(_) => Err(NntpError("Request timeout".into())),
         };
 
-        // Broadcast to waiters
-        let _ = tx.send(result.clone());
-
-        // Cleanup pending
+        // Broadcast to waiters and cleanup pending in one lock acquisition
+        // Remove first to minimize time holding lock, then broadcast
         self.pending.articles.lock().await.remove(message_id);
+        let _ = tx.send(result.clone());
 
         result
     }
@@ -166,7 +172,7 @@ impl NntpService {
 
                 tracing::debug!(server = %self.name, %group, %count, "Coalescing with pending threads request");
                 return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
-                    Ok(Ok(result)) => result,
+                    Ok(Ok(result)) => result.map(unwrap_arc),
                     Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
                     Err(_) => Err(NntpError("Request timeout".into())),
                 };
@@ -194,21 +200,13 @@ impl NntpService {
         // Wait for result with timeout
         let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                self.pending.threads.lock().await.remove(&cache_key);
-                return Err(NntpError("Worker dropped request".into()));
-            }
-            Err(_) => {
-                self.pending.threads.lock().await.remove(&cache_key);
-                return Err(NntpError("Request timeout".into()));
-            }
+            Ok(Err(_)) => Err(NntpError("Worker dropped request".into())),
+            Err(_) => Err(NntpError("Request timeout".into())),
         };
 
-        // Broadcast to waiters
-        let _ = tx.send(result.clone());
-
-        // Cleanup pending
+        // Broadcast Arc-wrapped result to waiters, then cleanup pending
         self.pending.threads.lock().await.remove(&cache_key);
+        let _ = tx.send(result.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.clone()));
 
         result
     }
@@ -226,7 +224,7 @@ impl NntpService {
 
                 tracing::debug!(server = %self.name, %group, %message_id, "Coalescing with pending thread request");
                 return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
-                    Ok(Ok(result)) => result,
+                    Ok(Ok(result)) => result.map(unwrap_arc),
                     Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
                     Err(_) => Err(NntpError("Request timeout".into())),
                 };
@@ -254,21 +252,13 @@ impl NntpService {
         // Wait for result with timeout
         let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                self.pending.thread.lock().await.remove(&cache_key);
-                return Err(NntpError("Worker dropped request".into()));
-            }
-            Err(_) => {
-                self.pending.thread.lock().await.remove(&cache_key);
-                return Err(NntpError("Request timeout".into()));
-            }
+            Ok(Err(_)) => Err(NntpError("Worker dropped request".into())),
+            Err(_) => Err(NntpError("Request timeout".into())),
         };
 
-        // Broadcast to waiters
-        let _ = tx.send(result.clone());
-
-        // Cleanup pending
+        // Broadcast Arc-wrapped result to waiters, then cleanup pending
         self.pending.thread.lock().await.remove(&cache_key);
+        let _ = tx.send(result.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.clone()));
 
         result
     }
@@ -284,7 +274,7 @@ impl NntpService {
 
                 tracing::debug!(server = %self.name, "Coalescing with pending groups request");
                 return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
-                    Ok(Ok(result)) => result,
+                    Ok(Ok(result)) => result.map(unwrap_arc),
                     Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
                     Err(_) => Err(NntpError("Request timeout".into())),
                 };
@@ -308,21 +298,13 @@ impl NntpService {
         // Wait for result with timeout
         let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                *self.pending.groups.lock().await = None;
-                return Err(NntpError("Worker dropped request".into()));
-            }
-            Err(_) => {
-                *self.pending.groups.lock().await = None;
-                return Err(NntpError("Request timeout".into()));
-            }
+            Ok(Err(_)) => Err(NntpError("Worker dropped request".into())),
+            Err(_) => Err(NntpError("Request timeout".into())),
         };
 
-        // Broadcast to waiters
-        let _ = tx.send(result.clone());
-
-        // Cleanup pending
+        // Broadcast Arc-wrapped result to waiters, then cleanup pending
         *self.pending.groups.lock().await = None;
+        let _ = tx.send(result.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.clone()));
 
         result
     }
@@ -365,22 +347,40 @@ impl NntpService {
         // Wait for result with timeout
         let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                self.pending.group_stats.lock().await.remove(group);
-                return Err(NntpError("Worker dropped request".into()));
-            }
-            Err(_) => {
-                self.pending.group_stats.lock().await.remove(group);
-                return Err(NntpError("Request timeout".into()));
-            }
+            Ok(Err(_)) => Err(NntpError("Worker dropped request".into())),
+            Err(_) => Err(NntpError("Request timeout".into())),
         };
 
-        // Broadcast to waiters
+        // Broadcast to waiters and cleanup pending in one lock acquisition
+        // Remove first to minimize time holding lock, then broadcast
+        self.pending.group_stats.lock().await.remove(group);
         let _ = tx.send(result.clone());
 
-        // Cleanup pending
-        self.pending.group_stats.lock().await.remove(group);
-
         result
+    }
+
+    /// Fetch new articles since a given article number (for incremental updates)
+    /// Note: No coalescing for this request as it's parameterized by article number
+    pub async fn get_new_articles(
+        &self,
+        group: &str,
+        since_article_number: u64,
+    ) -> Result<Vec<OverviewEntry>, NntpError> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.request_tx
+            .send(NntpRequest::GetNewArticles {
+                group: group.to_string(),
+                since_article_number,
+                response: resp_tx,
+            })
+            .await
+            .map_err(|_| NntpError("Worker pool closed".into()))?;
+
+        // Wait for result with timeout
+        match tokio::time::timeout(self.request_timeout, resp_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(NntpError("Worker dropped request".into())),
+            Err(_) => Err(NntpError("Request timeout".into())),
+        }
     }
 }

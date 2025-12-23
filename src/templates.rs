@@ -132,6 +132,18 @@ fn is_quote_line(line: &str) -> bool {
         }
     }
     
+    // Check for "name <email> writes:" pattern
+    if trimmed.ends_with(':') && trimmed.contains('<') && trimmed.contains('>') {
+        let lower = trimmed.to_lowercase();
+        if lower.ends_with(" wrote:")
+            || lower.ends_with(" writes:")
+            || lower.ends_with(" said:")
+            || lower.ends_with(" says:")
+        {
+            return true;
+        }
+    }
+    
     false
 }
 
@@ -357,6 +369,11 @@ mod tests {
         assert!(is_quote_line("On Thu, 30 Oct 2025, Someone writes:"));
         assert!(is_quote_line("On Mon, 1 Jan 2024, Person said:"));
         assert!(is_quote_line("On Tue, 2 Feb 2024, Another says:"));
+        // name <email> pattern
+        assert!(is_quote_line("John Smith <john@example.com> writes:"));
+        assert!(is_quote_line("Jane Doe <jane@test.org> wrote:"));
+        assert!(is_quote_line("Someone <user@domain.com> said:"));
+        assert!(is_quote_line("Another <another@example.net> says:"));
     }
 
     #[test]
