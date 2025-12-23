@@ -47,6 +47,3 @@ async-channel = "2"
 # Caching
 moka = { version = "0.12", features = ["future"] }
 
-[dev-dependencies]
-# Browser automation testing
-thirtyfour = "0.35"
