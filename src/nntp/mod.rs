@@ -1,3 +1,12 @@
+//! NNTP client module providing Usenet/newsgroup access.
+//!
+//! This module contains data types for representing articles, threads, and newsgroups,
+//! as well as thread-building logic that constructs threaded views from NNTP OVER and HDR
+//! command responses.
+//!
+//! Key re-exports:
+//! - [`NntpFederatedService`] - Federated NNTP service for multi-server access
+
 mod federated;
 mod messages;
 mod service;
@@ -13,7 +22,7 @@ use serde::Serialize;
 
 use crate::config::{DEFAULT_SUBJECT, PAGINATION_WINDOW};
 
-/// Pagination metadata for templates
+/// Pagination state for paginated list views.
 #[derive(Debug, Clone, Serialize)]
 pub struct PaginationInfo {
     pub current_page: usize,
@@ -54,7 +63,7 @@ impl PaginationInfo {
     }
 }
 
-/// View model for a thread in list view
+/// Thread metadata including root message-id, subject, dates, and reply count.
 #[derive(Debug, Clone, Serialize)]
 pub struct ThreadView {
     pub subject: String,
@@ -65,7 +74,7 @@ pub struct ThreadView {
     pub last_post_date: Option<String>,
 }
 
-/// View model for a node in the thread tree
+/// Node in a threaded article tree with child replies.
 #[derive(Debug, Clone, Serialize)]
 pub struct ThreadNodeView {
     pub message_id: String,
@@ -76,7 +85,7 @@ pub struct ThreadNodeView {
     pub descendant_count: usize,
 }
 
-/// Flattened comment for non-recursive template rendering
+/// Flattened article for paginated display with nesting depth info.
 #[derive(Debug, Clone, Serialize)]
 pub struct FlatComment {
     pub message_id: String,
@@ -163,7 +172,7 @@ impl ThreadNodeView {
     }
 }
 
-/// View model for an article
+/// Parsed article with headers and body for display.
 #[derive(Debug, Clone, Serialize)]
 pub struct ArticleView {
     pub message_id: String,
@@ -175,7 +184,7 @@ pub struct ArticleView {
     pub headers: Option<String>,
 }
 
-/// View model for a newsgroup
+/// Newsgroup metadata including name, description, and article counts.
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupView {
     pub name: String,
@@ -183,7 +192,7 @@ pub struct GroupView {
     pub article_count: Option<u64>,
 }
 
-/// View model for a node in the group tree hierarchy
+/// Node in a hierarchical newsgroup tree for navigation.
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupTreeNode {
     /// The segment name (e.g., "comp" or "lang" or "python")
@@ -333,7 +342,7 @@ impl GroupTreeNode {
     }
 }
 
-/// Convert an nntp-rs Article to ArticleView
+/// Parse a raw NNTP article into an [`ArticleView`].
 pub fn parse_article(article: &nntp_rs::Article) -> ArticleView {
     // Extract raw headers as string for display
     let headers = article
@@ -350,8 +359,9 @@ pub fn parse_article(article: &nntp_rs::Article) -> ArticleView {
     }
 }
 
-/// Build ThreadViews from OverviewEntry data.
-/// Uses the references field to build thread structure.
+/// Build a thread list from NNTP OVER command response data.
+///
+/// Uses the References header to reconstruct thread structure.
 pub fn build_threads_from_overview(entries: Vec<OverviewEntry>) -> Vec<ThreadView> {
     if entries.is_empty() {
         return Vec::new();
@@ -528,12 +538,10 @@ fn find_latest_date_overview(entries: &[&OverviewEntry]) -> Option<String> {
     latest.map(|(s, _)| s)
 }
 
-/// Merge new articles into existing threads.
+/// Merge new articles into an existing thread cache.
 ///
-/// - Updates existing threads with new replies
-/// - Creates new threads for new root messages
-///
-/// Returns the merged thread list.
+/// Updates existing threads with new replies and creates new threads for
+/// messages that do not belong to any existing thread.
 pub fn merge_articles_into_threads(
     existing: &[ThreadView],
     new_entries: Vec<OverviewEntry>,
@@ -664,7 +672,7 @@ fn add_reply_to_node(
     false
 }
 
-/// Article data collected from HDR commands
+/// Raw article data collected from NNTP HDR commands before parsing.
 #[derive(Debug, Clone)]
 pub struct HdrArticleData {
     pub message_id: String,
@@ -674,8 +682,9 @@ pub struct HdrArticleData {
     pub date: String,
 }
 
-/// Build ThreadViews from HDR-collected article data.
-/// Uses the references field to build thread structure.
+/// Build a thread list from NNTP HDR command response data.
+///
+/// Uses the References header to reconstruct thread structure.
 pub fn build_threads_from_hdr(articles: Vec<HdrArticleData>) -> Vec<ThreadView> {
     if articles.is_empty() {
         return Vec::new();

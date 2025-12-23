@@ -1,3 +1,9 @@
+//! HTTP route handlers for the web interface.
+//!
+//! Routes are organized by content type, with per-route Cache-Control headers.
+//! Immutable content (articles) uses longer cache durations, while dynamic
+//! content (thread lists) uses shorter durations.
+
 pub mod article;
 pub mod home;
 pub mod threads;
@@ -12,6 +18,7 @@ use crate::config::{
 };
 use crate::state::AppState;
 
+/// Creates the Axum router with all routes and cache headers.
 pub fn create_router(state: AppState) -> Router {
     // Articles - longest cache, content is immutable
     let article_routes = Router::new()

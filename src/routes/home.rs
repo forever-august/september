@@ -1,3 +1,8 @@
+//! Handlers for home page and newsgroup browsing.
+//!
+//! Displays a hierarchical group tree with statistics.
+//! Prefetches group stats in the background for uncached groups.
+
 use std::collections::HashMap;
 
 use axum::{
@@ -44,6 +49,7 @@ async fn get_stats_for_groups(
     (group_stats, thread_counts, needs_prefetch)
 }
 
+/// Home page handler showing all newsgroups in a tree hierarchy.
 pub async fn index(State(state): State<AppState>) -> Result<Html<String>, AppError> {
     // Fetch all groups (cached + coalesced)
     let groups = state.nntp.get_groups().await?;
@@ -80,6 +86,7 @@ pub async fn index(State(state): State<AppState>) -> Result<Html<String>, AppErr
     Ok(Html(html))
 }
 
+/// Browse handler for navigating into group hierarchy by prefix path.
 pub async fn browse(
     State(state): State<AppState>,
     Path(prefix): Path<String>,

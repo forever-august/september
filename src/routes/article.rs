@@ -1,3 +1,7 @@
+//! Handler for viewing a single article by message-id.
+//!
+//! Used for direct article links independent of thread context.
+
 use axum::{
     extract::{Path, Query, State},
     response::Html,
@@ -17,6 +21,7 @@ pub struct ViewParams {
     pub back: Option<String>,
 }
 
+/// Fetches and displays a single article.
 pub async fn view(
     State(state): State<AppState>,
     Path(path): Path<ViewPath>,

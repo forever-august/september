@@ -1,3 +1,9 @@
+//! Configuration loading and constants.
+//!
+//! Loads application configuration from TOML files and defines constants for
+//! HTTP cache TTLs, pagination settings, NNTP timeouts and limits, and default paths.
+//! `AppConfig` is the root configuration struct containing all settings.
+
 use const_format::formatcp;
 use serde::{Deserialize, Serialize};
 use std::path::Path;

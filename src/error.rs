@@ -1,3 +1,9 @@
+//! Application error types and their mapping to HTTP responses.
+//!
+//! Defines `AppError` variants for different failure modes and implements
+//! `IntoResponse` to convert errors into appropriate HTTP status codes and
+//! user-friendly error pages.
+
 use axum::{
     http::StatusCode,
     response::{Html, IntoResponse, Response},
@@ -9,18 +15,23 @@ use crate::config::CACHE_CONTROL_ERROR;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    /// NNTP server connection or protocol errors.
     #[error("NNTP connection error: {0}")]
     NntpConnection(#[from] nntp_rs::Error),
 
+    /// Tera template rendering errors.
     #[error("Template rendering error: {0}")]
     Template(#[from] tera::Error),
 
+    /// Requested article does not exist.
     #[error("Article not found: {0}")]
     ArticleNotFound(String),
 
+    /// File system or I/O errors.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
 
+    /// Catch-all for unexpected errors.
     #[error("Internal error: {0}")]
     Internal(String),
 }

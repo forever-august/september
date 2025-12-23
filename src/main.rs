@@ -1,3 +1,9 @@
+//! September: an NNTP web interface.
+//!
+//! This is the application entry point. It initializes tracing, loads configuration
+//! from TOML files, creates the NNTP federated service, spawns worker connections,
+//! sets up the Axum router with all routes, and starts the HTTP server.
+
 mod config;
 mod error;
 mod nntp;

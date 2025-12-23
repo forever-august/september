@@ -1,3 +1,7 @@
+//! Handlers for thread listing and thread viewing.
+//!
+//! Supports pagination for both thread lists and article comments.
+
 use axum::{
     extract::{Path, Query, State},
     response::Html,
@@ -7,11 +11,13 @@ use serde::Deserialize;
 use crate::error::AppError;
 use crate::state::AppState;
 
+/// Query parameters for thread list pagination.
 #[derive(Deserialize)]
 pub struct ListParams {
     pub page: Option<usize>,
 }
 
+/// Handler for paginated thread list in a newsgroup.
 pub async fn list(
     State(state): State<AppState>,
     Path(group): Path<String>,
@@ -46,17 +52,20 @@ pub async fn list(
     Ok(Html(html))
 }
 
+/// Path parameters for thread view (group and message_id).
 #[derive(Deserialize)]
 pub struct ViewPath {
     pub group: String,
     pub message_id: String,
 }
 
+/// Query parameters for thread view pagination.
 #[derive(Deserialize)]
 pub struct ViewParams {
     pub page: Option<usize>,
 }
 
+/// Handler for viewing a thread with paginated comments.
 pub async fn view(
     State(state): State<AppState>,
     Path(path): Path<ViewPath>,

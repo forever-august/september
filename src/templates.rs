@@ -1,3 +1,8 @@
+//! Tera template initialization and custom filters.
+//!
+//! Sets up the Tera template engine with custom filters for text processing,
+//! date formatting, and article preview generation.
+
 use chrono::{DateTime, Utc};
 use tera::Tera;
 
@@ -219,8 +224,11 @@ fn strip_block_quotes(s: &str) -> String {
     lines[start..end].join("\n")
 }
 
-/// Truncate text to a preview of N lines, stopping at next line break if over,
-/// with a hard limit of 1024 characters. Block quotes are stripped first.
+/// Extracts the first N non-quote lines from an article body for preview display.
+///
+/// Strips leading and trailing block quotes, then returns up to the specified
+/// number of lines (default 10), extending to the next paragraph break. Enforces
+/// a hard limit of 1024 characters.
 fn preview_filter(
     value: &tera::Value,
     args: &std::collections::HashMap<String, tera::Value>,
@@ -278,8 +286,11 @@ fn preview_filter(
     Ok(tera::Value::String(result))
 }
 
-/// Check if text has more than N lines after stripping block quotes,
-/// or exceeds 1024 characters (for showing "read more" button)
+/// Checks if an article body has more content than the preview would show.
+///
+/// Returns true if the text (after stripping block quotes) exceeds the line
+/// limit or the 1024 character hard limit. Used to determine whether to show
+/// a "read more" link.
 fn has_more_lines_filter(
     value: &tera::Value,
     args: &std::collections::HashMap<String, tera::Value>,
