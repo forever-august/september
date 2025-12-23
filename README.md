@@ -38,15 +38,36 @@ cargo run --release
 
 Access the web interface at http://127.0.0.1:3000
 
+## Command Line Options
+
+```
+Usage: september [OPTIONS]
+
+Options:
+  -c, --config <CONFIG>        Path to configuration file [default: config/default.toml]
+  -l, --log-level <LOG_LEVEL>  Log level filter (e.g., "september=debug,tower_http=info")
+  -h, --help                   Print help
+  -V, --version                Print version
+```
+
+Examples:
+
+```bash
+# Use a custom config file
+./target/release/september -c /etc/september/config.toml
+
+# Set log level to info
+./target/release/september -l "september=info,tower_http=warn"
+
+# Combine options
+./target/release/september --config prod.toml --log-level september=warn
+```
+
+Log level priority: CLI (`-l`) > `RUST_LOG` environment variable > default (`september=debug,tower_http=debug`)
+
 ## Configuration
 
 Configuration uses TOML format. See `config/default.toml` for available options.
-
-To use a custom config file, set the `CONFIG_PATH` environment variable:
-
-```bash
-CONFIG_PATH=/path/to/config.toml ./target/release/september
-```
 
 The default configuration connects to `nntp.lore.kernel.org` (Linux kernel mailing list archives).
 
