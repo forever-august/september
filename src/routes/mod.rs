@@ -8,7 +8,7 @@ use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 
 use crate::config::{
     CACHE_CONTROL_ARTICLE, CACHE_CONTROL_HOME, CACHE_CONTROL_STATIC, CACHE_CONTROL_THREAD_LIST,
-    CACHE_CONTROL_THREAD_VIEW,
+    CACHE_CONTROL_THREAD_VIEW, STATIC_DIR,
 };
 use crate::state::AppState;
 
@@ -48,7 +48,7 @@ pub fn create_router(state: AppState) -> Router {
 
     // Static files - long cache with immutable hint
     let static_routes = Router::new()
-        .nest_service("/static", ServeDir::new("static"))
+        .nest_service("/static", ServeDir::new(STATIC_DIR))
         .layer(SetResponseHeaderLayer::if_not_present(
             CACHE_CONTROL,
             HeaderValue::from_static(CACHE_CONTROL_STATIC),

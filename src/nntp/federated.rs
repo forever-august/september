@@ -13,7 +13,10 @@ use chrono::DateTime;
 use moka::future::Cache;
 use tokio::sync::{broadcast, RwLock};
 
-use crate::config::{AppConfig, CacheConfig};
+use crate::config::{
+    AppConfig, CacheConfig, BROADCAST_CHANNEL_CAPACITY, NEGATIVE_CACHE_SIZE_DIVISOR,
+    NNTP_NEGATIVE_CACHE_TTL_SECS, THREAD_CACHE_MULTIPLIER,
+};
 use crate::error::AppError;
 
 use nntp_rs::OverviewEntry;
@@ -97,7 +100,7 @@ impl NntpFederatedService {
             .build();
 
         let thread_cache = Cache::builder()
-            .max_capacity(cache_config.max_thread_lists * 10) // More individual threads than lists
+            .max_capacity(cache_config.max_thread_lists * THREAD_CACHE_MULTIPLIER) // More individual threads than lists
             .time_to_live(Duration::from_secs(cache_config.threads_ttl_seconds))
             .build();
 
@@ -111,10 +114,10 @@ impl NntpFederatedService {
             .time_to_live(Duration::from_secs(cache_config.threads_ttl_seconds))
             .build();
 
-        // Negative cache for not-found articles with short TTL (30 seconds)
+        // Negative cache for not-found articles with short TTL
         let article_not_found_cache = Cache::builder()
-            .max_capacity(cache_config.max_articles / 4) // Quarter the size of positive cache
-            .time_to_live(Duration::from_secs(30))
+            .max_capacity(cache_config.max_articles / NEGATIVE_CACHE_SIZE_DIVISOR) // Quarter the size of positive cache
+            .time_to_live(Duration::from_secs(NNTP_NEGATIVE_CACHE_TTL_SECS))
             .build();
 
         Self {
@@ -694,7 +697,7 @@ impl NntpFederatedService {
         }
 
         // Register pending request
-        let (tx, _) = broadcast::channel(16);
+        let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
         {
             let mut pending = self.pending_group_stats.write().await;
             // Double-check cache and pending after acquiring write lock

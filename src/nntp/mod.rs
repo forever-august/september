@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use nntp_rs::OverviewEntry;
 use serde::Serialize;
 
+use crate::config::{DEFAULT_SUBJECT, PAGINATION_WINDOW};
+
 /// Pagination metadata for templates
 #[derive(Debug, Clone, Serialize)]
 pub struct PaginationInfo {
@@ -46,9 +48,8 @@ impl PaginationInfo {
     }
 
     fn compute_visible_pages(current: usize, total: usize) -> Vec<usize> {
-        let window = 2; // Show 2 pages on each side
-        let start = current.saturating_sub(window).max(1);
-        let end = (current + window).min(total);
+        let start = current.saturating_sub(PAGINATION_WINDOW).max(1);
+        let end = (current + PAGINATION_WINDOW).min(total);
         (start..=end).collect()
     }
 }
@@ -405,7 +406,7 @@ pub fn build_threads_from_overview(entries: Vec<OverviewEntry>) -> Vec<ThreadVie
         let subject = root_entry
             .or_else(|| thread_entries.first())
             .and_then(|e| e.subject())
-            .unwrap_or("(no subject)")
+            .unwrap_or(DEFAULT_SUBJECT)
             .to_string();
 
         // Build the tree structure using original root_id
@@ -500,7 +501,7 @@ fn build_node_from_entry(
 fn overview_entry_to_article_view(entry: &OverviewEntry) -> ArticleView {
     ArticleView {
         message_id: entry.message_id().unwrap_or("").to_string(),
-        subject: entry.subject().unwrap_or("(no subject)").to_string(),
+        subject: entry.subject().unwrap_or(DEFAULT_SUBJECT).to_string(),
         from: entry.from().unwrap_or("").to_string(),
         date: entry.date().unwrap_or("").to_string(),
         body: None, // Overview doesn't include body
@@ -722,7 +723,7 @@ pub fn build_threads_from_hdr(articles: Vec<HdrArticleData>) -> Vec<ThreadView> 
         let subject = root_article
             .or_else(|| thread_articles.first())
             .map(|a| a.subject.clone())
-            .unwrap_or_else(|| "(no subject)".to_string());
+            .unwrap_or_else(|| DEFAULT_SUBJECT.to_string());
 
         // Build the tree structure using original root_id
         // If root article is missing, build_node_from_hdr will create a node with article: None

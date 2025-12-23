@@ -1,11 +1,16 @@
 use chrono::{DateTime, Utc};
 use tera::Tera;
 
+use crate::config::{
+    DEFAULT_PREVIEW_LINES, DEFAULT_TRUNCATE_WORDS, PREVIEW_HARD_LIMIT,
+    SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, SECONDS_PER_MONTH, SECONDS_PER_YEAR,
+    TEMPLATE_GLOB,
+};
 use crate::error::AppError;
 
 /// Initialize the Tera template engine
 pub fn init_templates() -> Result<Tera, AppError> {
-    let mut tera = Tera::new("templates/**/*")?;
+    let mut tera = Tera::new(TEMPLATE_GLOB)?;
 
     // Add custom filters
     tera.register_filter("truncate_words", truncate_words_filter);
@@ -28,7 +33,7 @@ fn truncate_words_filter(
     let count = args
         .get("count")
         .and_then(|v| v.as_u64())
-        .unwrap_or(50) as usize;
+        .unwrap_or(DEFAULT_TRUNCATE_WORDS as u64) as usize;
 
     let words: Vec<&str> = s.split_whitespace().collect();
     if words.len() <= count {
@@ -61,38 +66,38 @@ fn timeago_filter(
             let seconds = duration.num_seconds();
             let result = if seconds < 0 {
                 "in the future".to_string()
-            } else if seconds < 60 {
+            } else if seconds < SECONDS_PER_MINUTE {
                 "just now".to_string()
-            } else if seconds < 3600 {
-                let mins = seconds / 60;
+            } else if seconds < SECONDS_PER_HOUR {
+                let mins = seconds / SECONDS_PER_MINUTE;
                 if mins == 1 {
                     "1 minute ago".to_string()
                 } else {
                     format!("{} minutes ago", mins)
                 }
-            } else if seconds < 86400 {
-                let hours = seconds / 3600;
+            } else if seconds < SECONDS_PER_DAY {
+                let hours = seconds / SECONDS_PER_HOUR;
                 if hours == 1 {
                     "1 hour ago".to_string()
                 } else {
                     format!("{} hours ago", hours)
                 }
-            } else if seconds < 2592000 {
-                let days = seconds / 86400;
+            } else if seconds < SECONDS_PER_MONTH {
+                let days = seconds / SECONDS_PER_DAY;
                 if days == 1 {
                     "1 day ago".to_string()
                 } else {
                     format!("{} days ago", days)
                 }
-            } else if seconds < 31536000 {
-                let months = seconds / 2592000;
+            } else if seconds < SECONDS_PER_YEAR {
+                let months = seconds / SECONDS_PER_MONTH;
                 if months == 1 {
                     "1 month ago".to_string()
                 } else {
                     format!("{} months ago", months)
                 }
             } else {
-                let years = seconds / 31536000;
+                let years = seconds / SECONDS_PER_YEAR;
                 if years == 1 {
                     "1 year ago".to_string()
                 } else {
@@ -227,9 +232,7 @@ fn preview_filter(
     let max_lines = args
         .get("lines")
         .and_then(|v| v.as_u64())
-        .unwrap_or(10) as usize;
-
-    const HARD_LIMIT: usize = 1024;
+        .unwrap_or(DEFAULT_PREVIEW_LINES as u64) as usize;
 
     // Strip block quotes first
     let stripped = strip_block_quotes(s);
@@ -237,14 +240,14 @@ fn preview_filter(
     let lines: Vec<&str> = stripped.lines().collect();
     if lines.len() <= max_lines {
         // Under line limit, but still enforce hard character limit
-        if stripped.len() <= HARD_LIMIT {
+        if stripped.len() <= PREVIEW_HARD_LIMIT {
             return Ok(tera::Value::String(stripped));
         }
         // Find next line break after hard limit
-        if let Some(pos) = stripped[HARD_LIMIT..].find('\n') {
-            return Ok(tera::Value::String(stripped[..HARD_LIMIT + pos].to_string()));
+        if let Some(pos) = stripped[PREVIEW_HARD_LIMIT..].find('\n') {
+            return Ok(tera::Value::String(stripped[..PREVIEW_HARD_LIMIT + pos].to_string()));
         }
-        return Ok(tera::Value::String(stripped[..HARD_LIMIT].to_string()));
+        return Ok(tera::Value::String(stripped[..PREVIEW_HARD_LIMIT].to_string()));
     }
 
     // Over line limit: take max_lines, then continue to next line break
@@ -260,16 +263,16 @@ fn preview_filter(
             result.push('\n');
             result.push_str(line);
             // Check hard limit
-            if result.len() >= HARD_LIMIT {
-                result.truncate(HARD_LIMIT);
+            if result.len() >= PREVIEW_HARD_LIMIT {
+                result.truncate(PREVIEW_HARD_LIMIT);
                 break;
             }
         }
     }
 
     // Final hard limit check
-    if result.len() > HARD_LIMIT {
-        result.truncate(HARD_LIMIT);
+    if result.len() > PREVIEW_HARD_LIMIT {
+        result.truncate(PREVIEW_HARD_LIMIT);
     }
 
     Ok(tera::Value::String(result))
@@ -288,15 +291,13 @@ fn has_more_lines_filter(
     let max_lines = args
         .get("lines")
         .and_then(|v| v.as_u64())
-        .unwrap_or(10) as usize;
-
-    const HARD_LIMIT: usize = 1024;
+        .unwrap_or(DEFAULT_PREVIEW_LINES as u64) as usize;
 
     // Strip block quotes first (same as preview_filter)
     let stripped = strip_block_quotes(s);
 
     let line_count = stripped.lines().count();
-    Ok(tera::Value::Bool(line_count > max_lines || stripped.len() > HARD_LIMIT))
+    Ok(tera::Value::Bool(line_count > max_lines || stripped.len() > PREVIEW_HARD_LIMIT))
 }
 
 #[cfg(test)]

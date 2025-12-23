@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, oneshot, Mutex};
 
 use nntp_rs::OverviewEntry;
 
-use crate::config::{NntpServerConfig, NntpSettings};
+use crate::config::{NntpServerConfig, NntpSettings, BROADCAST_CHANNEL_CAPACITY, NNTP_REQUEST_QUEUE_CAPACITY};
 
 use super::messages::{GroupStatsView, NntpError, NntpRequest};
 use super::worker::NntpWorker;
@@ -65,7 +65,7 @@ impl NntpService {
     /// Create a new NNTP service for a single server
     pub fn new(server_config: NntpServerConfig, global_settings: NntpSettings) -> Self {
         // Create the request channel with backpressure
-        let (tx, rx) = async_channel::bounded(100);
+        let (tx, rx) = async_channel::bounded(NNTP_REQUEST_QUEUE_CAPACITY);
 
         let request_timeout = Duration::from_secs(
             server_config.request_timeout_seconds(&global_settings)
@@ -131,7 +131,7 @@ impl NntpService {
         }
 
         // Register pending request and send to worker
-        let (tx, _) = broadcast::channel(16);
+        let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
         pending.insert(message_id.to_string(), (tx.clone(), Instant::now()));
         drop(pending);
 
@@ -183,7 +183,7 @@ impl NntpService {
         }
 
         // Register pending request and send to worker
-        let (tx, _) = broadcast::channel(16);
+        let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
         pending.insert(cache_key.clone(), (tx.clone(), Instant::now()));
         drop(pending);
 
@@ -235,7 +235,7 @@ impl NntpService {
         }
 
         // Register pending request and send to worker
-        let (tx, _) = broadcast::channel(16);
+        let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
         pending.insert(cache_key.clone(), (tx.clone(), Instant::now()));
         drop(pending);
 
@@ -285,7 +285,7 @@ impl NntpService {
         }
 
         // Register pending request and send to worker
-        let (tx, _) = broadcast::channel(16);
+        let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
         *pending = Some((tx.clone(), Instant::now()));
         drop(pending);
 
@@ -331,7 +331,7 @@ impl NntpService {
         }
 
         // Register pending request and send to worker
-        let (tx, _) = broadcast::channel(16);
+        let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
         pending.insert(group.to_string(), (tx.clone(), Instant::now()));
         drop(pending);
 

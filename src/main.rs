@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use config::AppConfig;
+use config::{AppConfig, DEFAULT_CONFIG_PATH, DEFAULT_LOG_FILTER};
 use nntp::NntpFederatedService;
 use routes::create_router;
 use state::AppState;
@@ -21,13 +21,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "september=debug,tower_http=debug".into()),
+                .unwrap_or_else(|_| DEFAULT_LOG_FILTER.into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
     // Load configuration
-    let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config/default.toml".to_string());
+    let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
     let mut config = AppConfig::load(&config_path)?;
 
     // Default site_name to first server name if not configured

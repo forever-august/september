@@ -7,11 +7,8 @@ use nntp_rs::runtime::tokio::NntpClient;
 use nntp_rs::threading::{FetchedArticle, NntpClientThreadingExt, ThreadCollection};
 use nntp_rs::ListVariant;
 
-use crate::config::NntpConfig;
+use crate::config::{NntpConfig, NNTP_MAX_POOL_SIZE};
 use crate::error::AppError;
-
-/// Maximum number of idle connections to keep in the pool
-const MAX_POOL_SIZE: usize = 5;
 
 /// Connection pool for NNTP clients using lock-free async channels
 #[derive(Clone)]
@@ -27,7 +24,7 @@ impl NntpPool {
     pub fn new(config: NntpConfig) -> Self {
         // Create a bounded channel with capacity for max pool size
         // This provides natural backpressure and limits pool growth
-        let (pool_tx, pool_rx) = bounded(MAX_POOL_SIZE);
+        let (pool_tx, pool_rx) = bounded(NNTP_MAX_POOL_SIZE);
         Self {
             config: Arc::new(config),
             pool_tx,

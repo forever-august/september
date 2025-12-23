@@ -74,6 +74,106 @@ pub const CACHE_CONTROL_STATIC: &str =
 
 pub const CACHE_CONTROL_ERROR: &str = formatcp!("public, max-age={}", HTTP_CACHE_ERROR_MAX_AGE);
 
+// =============================================================================
+// Template / Preview Constants
+// =============================================================================
+
+/// Maximum characters for article preview (hard limit)
+pub const PREVIEW_HARD_LIMIT: usize = 1024;
+
+/// Default number of lines for preview filter
+pub const DEFAULT_PREVIEW_LINES: usize = 10;
+
+/// Default word count for truncate_words filter
+pub const DEFAULT_TRUNCATE_WORDS: usize = 50;
+
+// Time unit constants (in seconds) for timeago filter
+/// Seconds in a minute
+pub const SECONDS_PER_MINUTE: i64 = 60;
+/// Seconds in an hour
+pub const SECONDS_PER_HOUR: i64 = 3600;
+/// Seconds in a day
+pub const SECONDS_PER_DAY: i64 = 86400;
+/// Seconds in a 30-day month
+pub const SECONDS_PER_MONTH: i64 = 2592000;
+/// Seconds in a 365-day year
+pub const SECONDS_PER_YEAR: i64 = 31536000;
+
+// =============================================================================
+// NNTP Connection Pool Constants
+// =============================================================================
+
+/// Maximum number of idle connections in NNTP connection pool
+pub const NNTP_MAX_POOL_SIZE: usize = 5;
+
+// =============================================================================
+// UI / Pagination Constants
+// =============================================================================
+
+/// Pagination window size (pages shown on each side of current page)
+pub const PAGINATION_WINDOW: usize = 2;
+
+// =============================================================================
+// NNTP Channel and Queue Constants
+// =============================================================================
+
+/// Capacity of the request queue (backpressure limit)
+pub const NNTP_REQUEST_QUEUE_CAPACITY: usize = 100;
+
+/// Capacity of broadcast channels for request coalescing
+pub const BROADCAST_CHANNEL_CAPACITY: usize = 16;
+
+// =============================================================================
+// NNTP Retry and Timeout Constants
+// =============================================================================
+
+/// Delay in seconds before reconnecting after connection failure
+pub const NNTP_RECONNECT_DELAY_SECS: u64 = 5;
+
+/// TTL in seconds for negative cache (article not found)
+pub const NNTP_NEGATIVE_CACHE_TTL_SECS: u64 = 30;
+
+// =============================================================================
+// NNTP Article Fetch Limits
+// =============================================================================
+
+/// Maximum articles to fetch per request (prevents timeout on large groups)
+pub const NNTP_MAX_ARTICLES_PER_REQUEST: u64 = 10000;
+
+/// Maximum articles to search when fetching a single thread
+pub const NNTP_MAX_ARTICLES_SINGLE_THREAD: u64 = 5000;
+
+/// Maximum articles for HEAD fallback method (slowest path)
+pub const NNTP_MAX_ARTICLES_HEAD_FALLBACK: u64 = 1000;
+
+/// Multiplier for individual thread cache capacity (relative to thread_lists)
+pub const THREAD_CACHE_MULTIPLIER: u64 = 10;
+
+/// Divisor for negative cache size (relative to article cache)
+pub const NEGATIVE_CACHE_SIZE_DIVISOR: u64 = 4;
+
+// =============================================================================
+// Default Paths and Strings
+// =============================================================================
+
+/// Default configuration file path
+pub const DEFAULT_CONFIG_PATH: &str = "config/default.toml";
+
+/// Glob pattern for template files
+pub const TEMPLATE_GLOB: &str = "templates/**/*";
+
+/// Directory for static files
+pub const STATIC_DIR: &str = "static";
+
+/// Default subject for articles without a subject
+pub const DEFAULT_SUBJECT: &str = "(no subject)";
+
+/// Default log filter when RUST_LOG is not set
+pub const DEFAULT_LOG_FILTER: &str = "september=debug,tower_http=debug";
+
+/// Default server name for legacy config migration
+pub const DEFAULT_SERVER_NAME: &str = "default";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     /// HTTP server configuration
@@ -177,7 +277,7 @@ impl NntpServerConfig {
         let port = settings.legacy_port?;
 
         Some(Self {
-            name: "default".to_string(),
+            name: DEFAULT_SERVER_NAME.to_string(),
             host: server.clone(),
             port,
             timeout_seconds: Some(settings.timeout_seconds),

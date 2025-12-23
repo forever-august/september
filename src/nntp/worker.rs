@@ -17,7 +17,10 @@ use nntp_rs::net_client::NntpClient;
 use nntp_rs::ListVariant;
 use tokio::time::timeout;
 
-use crate::config::{NntpServerConfig, NntpSettings};
+use crate::config::{
+    NntpServerConfig, NntpSettings, DEFAULT_SUBJECT, NNTP_MAX_ARTICLES_HEAD_FALLBACK,
+    NNTP_MAX_ARTICLES_PER_REQUEST, NNTP_MAX_ARTICLES_SINGLE_THREAD, NNTP_RECONNECT_DELAY_SECS,
+};
 
 use super::messages::{GroupStatsView, NntpError, NntpRequest, NntpResponse};
 use super::tls::NntpStream;
@@ -184,12 +187,12 @@ impl NntpWorker {
                 }
                 Ok(Err(e)) => {
                     tracing::error!(worker = self.id, error = %e, "Failed to connect to NNTP server");
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(Duration::from_secs(NNTP_RECONNECT_DELAY_SECS)).await;
                     continue;
                 }
                 Err(_) => {
                     tracing::error!(worker = self.id, "Connection timeout to NNTP server");
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(Duration::from_secs(NNTP_RECONNECT_DELAY_SECS)).await;
                     continue;
                 }
             };
@@ -206,7 +209,7 @@ impl NntpWorker {
                     }
                     Err(e) => {
                         tracing::error!(worker = self.id, error = %e, "Authentication failed");
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        tokio::time::sleep(Duration::from_secs(NNTP_RECONNECT_DELAY_SECS)).await;
                         continue;
                     }
                 }
@@ -362,7 +365,7 @@ impl NntpWorker {
 
                 // Calculate range for recent articles
                 // Use bounded range to avoid timeout with large groups
-                let fetch_count = (*count).min(stats.count).min(10000);
+                let fetch_count = (*count).min(stats.count).min(NNTP_MAX_ARTICLES_PER_REQUEST);
                 let start = stats.last.saturating_sub(fetch_count) + 1;
                 let range = format!("{}-{}", start, stats.last);
 
@@ -433,7 +436,7 @@ impl NntpWorker {
 
                 // Fetch overview entries (larger range to find thread)
                 // Use bounded range to avoid timeout with large groups
-                let fetch_count = 5000u64.min(stats.count);
+                let fetch_count = NNTP_MAX_ARTICLES_SINGLE_THREAD.min(stats.count);
                 let start = stats.last.saturating_sub(fetch_count) + 1;
                 let range = format!("{}-{}", start, stats.last);
 
@@ -666,10 +669,10 @@ impl NntpWorker {
             }
 
             let references = refs_map.get(&entry.article).cloned();
-            let subject = subjects_map
-                .get(&entry.article)
-                .cloned()
-                .unwrap_or_else(|| "(no subject)".to_string());
+                let subject = subjects_map
+                    .get(&entry.article)
+                    .cloned()
+                    .unwrap_or_else(|| DEFAULT_SUBJECT.to_string());
             let from = froms_map
                 .get(&entry.article)
                 .cloned()
@@ -711,7 +714,7 @@ impl NntpWorker {
         let mut articles: Vec<HdrArticleData> = Vec::new();
 
         // Limit the number of HEAD requests to avoid excessive time
-        let max_articles = 1000u64;
+        let max_articles = NNTP_MAX_ARTICLES_HEAD_FALLBACK;
         let actual_start = if end - start > max_articles {
             end - max_articles + 1
         } else {
@@ -734,7 +737,7 @@ impl NntpWorker {
                     // Parse headers
                     let mut message_id = String::new();
                     let mut references = None;
-                    let mut subject = "(no subject)".to_string();
+                    let mut subject = DEFAULT_SUBJECT.to_string();
                     let mut from = String::new();
                     let mut date = String::new();
 
