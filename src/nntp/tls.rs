@@ -35,8 +35,8 @@ pub fn last_connection_was_tls() -> bool {
 pub enum NntpStream {
     /// Plain TCP connection
     Plain(TcpStream),
-    /// TLS-encrypted connection
-    Tls(TlsStream<TcpStream>),
+    /// TLS-encrypted connection (boxed to reduce enum size)
+    Tls(Box<TlsStream<TcpStream>>),
 }
 
 #[async_trait]
@@ -123,7 +123,7 @@ impl NntpStream {
 
         let tls_stream = connector.connect(server_name, tcp_stream).await?;
 
-        Ok(NntpStream::Tls(tls_stream))
+        Ok(NntpStream::Tls(Box::new(tls_stream)))
     }
 
     /// Connect with plain TCP to the specified address

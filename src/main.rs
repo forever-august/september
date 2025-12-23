@@ -68,7 +68,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = create_router(state);
 
     // Start server
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.http.port));
+    let addr: SocketAddr = format!("{}:{}", config.http.host, config.http.port)
+        .parse()
+        .expect("Invalid http.host or http.port in config");
     tracing::info!("Starting server at http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

@@ -25,6 +25,9 @@ use super::messages::GroupStatsView;
 use super::service::NntpService;
 use super::{merge_articles_into_threads, ArticleView, FlatComment, GroupView, PaginationInfo, ThreadView};
 
+/// Type alias for pending group stats broadcast senders
+type PendingGroupStats = HashMap<String, broadcast::Sender<Result<GroupStatsView, String>>>;
+
 /// Cached thread data with high water mark for incremental updates
 #[derive(Clone)]
 struct CachedThreads {
@@ -58,7 +61,7 @@ pub struct NntpFederatedService {
     group_servers: Arc<RwLock<HashMap<String, Vec<usize>>>>,
 
     /// Pending group stats requests for coalescing at federated level
-    pending_group_stats: Arc<RwLock<HashMap<String, broadcast::Sender<Result<GroupStatsView, String>>>>>,
+    pending_group_stats: Arc<RwLock<PendingGroupStats>>,
 
     /// Maximum number of articles to fetch per group (from config)
     max_articles_per_group: u64,

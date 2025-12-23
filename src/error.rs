@@ -15,9 +15,6 @@ pub enum AppError {
     #[error("Template rendering error: {0}")]
     Template(#[from] tera::Error),
 
-    #[error("Newsgroup not found: {0}")]
-    GroupNotFound(String),
-
     #[error("Article not found: {0}")]
     ArticleNotFound(String),
 
@@ -31,7 +28,7 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
-            AppError::GroupNotFound(_) | AppError::ArticleNotFound(_) => {
+            AppError::ArticleNotFound(_) => {
                 (StatusCode::NOT_FOUND, self.to_string())
             }
             AppError::NntpConnection(_) => (

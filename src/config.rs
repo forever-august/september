@@ -100,13 +100,6 @@ pub const SECONDS_PER_MONTH: i64 = 2592000;
 pub const SECONDS_PER_YEAR: i64 = 31536000;
 
 // =============================================================================
-// NNTP Connection Pool Constants
-// =============================================================================
-
-/// Maximum number of idle connections in NNTP connection pool
-pub const NNTP_MAX_POOL_SIZE: usize = 5;
-
-// =============================================================================
 // UI / Pagination Constants
 // =============================================================================
 

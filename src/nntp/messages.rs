@@ -33,6 +33,7 @@ pub struct GroupStatsView {
 }
 
 /// Request messages sent to NNTP workers
+#[allow(clippy::enum_variant_names)] // "Get" prefix is intentional for request/response pattern
 pub enum NntpRequest {
     /// Fetch the list of available newsgroups
     GetGroups {

@@ -31,7 +31,7 @@ impl PaginationInfo {
         let total_pages = if total_items == 0 {
             1
         } else {
-            (total_items + items_per_page - 1) / items_per_page
+            total_items.div_ceil(items_per_page)
         };
 
         let visible_pages = Self::compute_visible_pages(current_page, total_pages);
@@ -529,8 +529,10 @@ fn find_latest_date_overview(entries: &[&OverviewEntry]) -> Option<String> {
 }
 
 /// Merge new articles into existing threads.
+///
 /// - Updates existing threads with new replies
 /// - Creates new threads for new root messages
+///
 /// Returns the merged thread list.
 pub fn merge_articles_into_threads(
     existing: &[ThreadView],
@@ -665,7 +667,6 @@ fn add_reply_to_node(
 /// Article data collected from HDR commands
 #[derive(Debug, Clone)]
 pub struct HdrArticleData {
-    pub article_number: u64,
     pub message_id: String,
     pub references: Option<String>,
     pub subject: String,

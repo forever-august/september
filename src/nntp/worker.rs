@@ -683,7 +683,6 @@ impl NntpWorker {
                 .unwrap_or_default();
 
             articles.push(HdrArticleData {
-                article_number: article_num,
                 message_id: entry.value.clone(),
                 references,
                 subject,
@@ -758,7 +757,6 @@ impl NntpWorker {
 
                     if !message_id.is_empty() {
                         articles.push(HdrArticleData {
-                            article_number: article_num,
                             message_id,
                             references,
                             subject,
