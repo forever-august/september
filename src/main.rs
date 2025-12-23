@@ -6,6 +6,7 @@
 
 mod config;
 mod error;
+mod middleware;
 mod nntp;
 mod routes;
 mod state;
@@ -29,6 +30,10 @@ struct Args {
     /// Log level filter (e.g., "september=debug,tower_http=info")
     #[arg(short, long)]
     log_level: Option<String>,
+
+    /// Log format: "text" (human-readable) or "json" (structured)
+    #[arg(long)]
+    log_format: Option<String>,
 }
 use nntp::NntpFederatedService;
 use routes::create_router;
@@ -40,18 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments
     let args = Args::parse();
 
-    // Initialize tracing with priority: CLI > env > default
-    let log_filter = args
-        .log_level
-        .or_else(|| std::env::var("RUST_LOG").ok())
-        .unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
-
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(&log_filter))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
-    // Load configuration
+    // Load configuration first (before tracing, so we can use config for log format)
     let mut config = AppConfig::load(&args.config)?;
 
     // Default site_name to first server name if not configured
@@ -59,7 +53,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.ui.site_name = config.server.first().map(|s| s.name.clone());
     }
 
-    tracing::info!("Loaded configuration");
+    // Initialize tracing with priority: CLI > config > env > default
+    let log_filter = args
+        .log_level
+        .or_else(|| std::env::var("RUST_LOG").ok())
+        .unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
+
+    // Determine log format: CLI > config file > default ("text")
+    let log_format = args
+        .log_format
+        .as_deref()
+        .unwrap_or(&config.logging.format);
+
+    // Build the subscriber with appropriate format layer
+    let env_filter = tracing_subscriber::EnvFilter::new(&log_filter);
+
+    if log_format == "json" {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer().json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    }
+
+    tracing::info!(format = %log_format, "Logging initialized");
 
     // Log configured servers
     for server in &config.server {

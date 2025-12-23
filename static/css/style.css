@@ -363,6 +363,20 @@ a:visited {
     color: #666;
 }
 
+.error-page .error-reference {
+    margin-top: 16px;
+    font-size: 12px;
+    color: #888;
+}
+
+.error-page .error-reference code {
+    background: #f0f0f0;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: monospace;
+    cursor: help;
+}
+
 /* Search */
 .search-container {
     margin-bottom: 12px;

@@ -7,11 +7,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::DateTime;
 use moka::future::Cache;
 use tokio::sync::{broadcast, RwLock};
+
+use tracing::instrument;
 
 use crate::config::{
     AppConfig, CacheConfig, BROADCAST_CHANNEL_CAPACITY, NEGATIVE_CACHE_SIZE_DIVISOR,
@@ -183,16 +185,24 @@ impl NntpFederatedService {
 
     /// Fetch an article by message ID
     /// Tries each server in order until the article is found
+    #[instrument(
+        name = "nntp.federated.get_article",
+        skip(self),
+        fields(cache_hit = false, duration_ms)
+    )]
     pub async fn get_article(&self, message_id: &str) -> Result<ArticleView, AppError> {
+        let start = Instant::now();
         // Check positive cache first
         if let Some(article) = self.article_cache.get(message_id).await {
-            tracing::debug!(%message_id, "Article cache hit");
+            tracing::Span::current().record("cache_hit", true);
+            tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
             return Ok(article);
         }
 
         // Check negative cache - if we recently determined this article doesn't exist, fail fast
         if self.article_not_found_cache.get(message_id).await.is_some() {
-            tracing::debug!(%message_id, "Article negative cache hit - not found");
+            tracing::Span::current().record("cache_hit", true);
+            tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
             return Err(AppError::ArticleNotFound(message_id.to_string()));
         }
 
@@ -207,20 +217,10 @@ impl NntpFederatedService {
                     self.article_cache
                         .insert(message_id.to_string(), article.clone())
                         .await;
-                    tracing::debug!(
-                        %message_id,
-                        server = %service.name(),
-                        "Article fetched from server"
-                    );
+                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
                     return Ok(article);
                 }
                 Err(e) => {
-                    tracing::debug!(
-                        %message_id,
-                        server = %service.name(),
-                        error = %e,
-                        "Article not found on server, trying next"
-                    );
 
                     // Track if we've seen any non-"not found" errors
                     if !Self::is_not_found_error(&e) {
@@ -241,10 +241,12 @@ impl NntpFederatedService {
             self.article_not_found_cache
                 .insert(message_id.to_string(), ())
                 .await;
+            tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
             return Err(AppError::ArticleNotFound(message_id.to_string()));
         }
 
         // Had some transient errors - don't cache, just return the error
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         Err(last_error
             .map(|e| AppError::Internal(e.0))
             .unwrap_or_else(|| AppError::Internal("No NNTP servers configured".into())))
@@ -253,24 +255,26 @@ impl NntpFederatedService {
     /// Fetch recent threads from a newsgroup with incremental update support.
     /// On cache hit, checks for new articles and fetches only the delta.
     /// The count parameter is ignored; uses max_articles_per_group from config.
+    #[instrument(
+        name = "nntp.federated.get_threads",
+        skip(self),
+        fields(cache_hit = false, duration_ms)
+    )]
     pub async fn get_threads(&self, group: &str, _count: u64) -> Result<Vec<ThreadView>, AppError> {
+        let start = Instant::now();
         let cache_key = group.to_string();
         let max_articles = self.max_articles_per_group;
 
         // Check cache first
         if let Some(cached) = self.threads_cache.get(&cache_key).await {
-            // Cache hit - check for new articles (incremental update)
-            tracing::debug!(
-                %group,
-                last_article = cached.last_article_number,
-                "Threads cache hit, checking for new articles"
-            );
+            tracing::Span::current().record("cache_hit", true);
 
+            // Cache hit - check for new articles (incremental update)
             // Try to get new articles since our cached high water mark
             match self.get_new_articles(group, cached.last_article_number).await {
                 Ok(new_entries) if new_entries.is_empty() => {
                     // No new articles
-                    tracing::debug!(%group, "No new articles since last fetch");
+                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
                     return Ok(cached.threads);
                 }
                 Ok(new_entries) => {
@@ -282,15 +286,6 @@ impl NntpFederatedService {
 
                     let merged = merge_articles_into_threads(&cached.threads, new_entries);
 
-                    tracing::debug!(
-                        %group,
-                        old_hwm = cached.last_article_number,
-                        new_hwm,
-                        old_thread_count = cached.threads.len(),
-                        new_thread_count = merged.len(),
-                        "Merged new articles into threads"
-                    );
-
                     // Update cache with merged data
                     self.threads_cache.insert(
                         cache_key,
@@ -300,6 +295,7 @@ impl NntpFederatedService {
                         },
                     ).await;
 
+                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
                     return Ok(merged);
                 }
                 Err(e) => {
@@ -309,14 +305,13 @@ impl NntpFederatedService {
                         error = %e,
                         "Failed to fetch new articles, returning cached data"
                     );
+                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
                     return Ok(cached.threads);
                 }
             }
         }
 
         // Cache miss - full fetch
-        tracing::debug!(%group, max_articles, "Threads cache miss, doing full fetch");
-
         // Get servers for this group (smart dispatch)
         let server_indices = self.get_servers_for_group(group).await;
 
@@ -339,29 +334,17 @@ impl NntpFederatedService {
                         },
                     ).await;
 
-                    tracing::debug!(
-                        %group,
-                        max_articles,
-                        server = %service.name(),
-                        thread_count = threads.len(),
-                        last_article_number,
-                        "Threads fetched from server"
-                    );
+                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
                     return Ok(threads);
                 }
                 Err(e) => {
-                    tracing::debug!(
-                        %group,
-                        server = %service.name(),
-                        error = %e,
-                        "Failed to get threads from server, trying next"
-                    );
                     last_error = Some(e);
                 }
             }
         }
 
         // All servers failed
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         Err(last_error
             .map(|e| AppError::Internal(e.0))
             .unwrap_or_else(|| AppError::Internal("Group not found on any server".into())))
@@ -481,12 +464,19 @@ impl NntpFederatedService {
 
     /// Fetch a single thread by group and root message ID
     /// Tries only servers known to carry the group (or all servers if group is unknown)
+    #[instrument(
+        name = "nntp.federated.get_thread",
+        skip(self),
+        fields(cache_hit = false, duration_ms)
+    )]
     pub async fn get_thread(&self, group: &str, message_id: &str) -> Result<ThreadView, AppError> {
+        let start = Instant::now();
         let cache_key = format!("{}:{}", group, message_id);
 
         // Check cache first
         if let Some(thread) = self.thread_cache.get(&cache_key).await {
-            tracing::debug!(%group, %message_id, "Thread cache hit");
+            tracing::Span::current().record("cache_hit", true);
+            tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
             return Ok(thread);
         }
 
@@ -501,28 +491,17 @@ impl NntpFederatedService {
                 Ok(thread) => {
                     // Cache and return
                     self.thread_cache.insert(cache_key, thread.clone()).await;
-                    tracing::debug!(
-                        %group,
-                        %message_id,
-                        server = %service.name(),
-                        "Thread fetched from server"
-                    );
+                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
                     return Ok(thread);
                 }
                 Err(e) => {
-                    tracing::debug!(
-                        %group,
-                        %message_id,
-                        server = %service.name(),
-                        error = %e,
-                        "Thread not found on server, trying next"
-                    );
                     last_error = Some(e);
                 }
             }
         }
 
         // All servers failed
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         Err(last_error
             .map(|e| AppError::Internal(e.0))
             .unwrap_or_else(|| AppError::Internal("Thread not found on any server".into())))
@@ -603,12 +582,19 @@ impl NntpFederatedService {
 
     /// Fetch the list of available newsgroups
     /// Merges groups from all servers (union) and tracks which servers carry each group
+    #[instrument(
+        name = "nntp.federated.get_groups",
+        skip(self),
+        fields(cache_hit = false, duration_ms)
+    )]
     pub async fn get_groups(&self) -> Result<Vec<GroupView>, AppError> {
+        let start = Instant::now();
         let cache_key = "groups".to_string();
 
         // Check cache first
         if let Some(groups) = self.groups_cache.get(&cache_key).await {
-            tracing::debug!("Groups cache hit");
+            tracing::Span::current().record("cache_hit", true);
+            tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
             return Ok(groups);
         }
 
@@ -634,12 +620,6 @@ impl NntpFederatedService {
                             all_groups.push(group);
                         }
                     }
-                    tracing::debug!(
-                        server = %service.name(),
-                        server_idx,
-                        group_count = all_groups.len(),
-                        "Merged groups from server"
-                    );
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -652,6 +632,7 @@ impl NntpFederatedService {
         }
 
         if !any_success {
+            tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
             return Err(AppError::Internal("Failed to fetch groups from any server".into()));
         }
 
@@ -663,25 +644,26 @@ impl NntpFederatedService {
 
         // Cache and return
         self.groups_cache.insert(cache_key, all_groups.clone()).await;
-        tracing::debug!(
-            total_groups = all_groups.len(),
-            server_count = self.services.len(),
-            "Groups merged and cached with server associations"
-        );
 
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         Ok(all_groups)
     }
 
     /// Fetch group stats (article count and last article date) from the server.
     /// Tries servers known to carry the group with caching and request coalescing.
+    #[instrument(
+        name = "nntp.federated.get_group_stats",
+        skip(self),
+        fields(cache_hit = false, coalesced = false, duration_ms)
+    )]
     pub async fn get_group_stats(&self, group: &str) -> Result<GroupStatsView, AppError> {
+        let start = Instant::now();
         // Check cache first
         if let Some(stats) = self.group_stats_cache.get(group).await {
-            tracing::debug!(%group, "Group stats cache hit");
+            tracing::Span::current().record("cache_hit", true);
+            tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
             return Ok(stats);
         }
-
-        tracing::debug!(%group, "Group stats cache miss");
 
         // Check for pending request (coalesce if one is already in flight)
         {
@@ -690,7 +672,7 @@ impl NntpFederatedService {
                 let mut rx = tx.subscribe();
                 drop(pending); // Release lock while waiting
 
-                tracing::debug!(%group, "Coalescing with pending federated group stats request");
+                tracing::Span::current().record("coalesced", true);
                 return match rx.recv().await {
                     Ok(Ok(stats)) => Ok(stats),
                     Ok(Err(e)) => Err(AppError::Internal(e)),
@@ -732,22 +714,10 @@ impl NntpFederatedService {
                 Ok(stats) => {
                     // Cache the result
                     self.group_stats_cache.insert(group.to_string(), stats.clone()).await;
-                    tracing::debug!(
-                        %group,
-                        server = %service.name(),
-                        article_count = stats.article_count,
-                        "Group stats fetched from server"
-                    );
                     result = Some(stats);
                     break;
                 }
                 Err(e) => {
-                    tracing::debug!(
-                        %group,
-                        server = %service.name(),
-                        error = %e,
-                        "Failed to get group stats from server, trying next"
-                    );
                     last_error = Some(e);
                 }
             }
@@ -762,6 +732,7 @@ impl NntpFederatedService {
         match result {
             Some(stats) => {
                 let _ = tx.send(Ok(stats.clone()));
+                tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
                 Ok(stats)
             }
             None => {
@@ -769,6 +740,7 @@ impl NntpFederatedService {
                     .map(|e| e.0)
                     .unwrap_or_else(|| "Group stats not available".into());
                 let _ = tx.send(Err(err_msg.clone()));
+                tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
                 Err(AppError::Internal(err_msg))
             }
         }

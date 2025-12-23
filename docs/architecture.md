@@ -95,6 +95,7 @@ Each `NntpService` manages a bounded request queue (`async_channel`). Workers pu
 | Application state | `src/state.rs:8` | Shared state container (Config, Tera, NntpFederatedService) |
 | Error handling | `src/error.rs` | Error types and HTTP response conversion |
 | Templates | `src/templates.rs` | Tera template engine initialization |
+| Middleware | `src/middleware.rs` | Request ID generation and request span creation |
 | Federated service | `src/nntp/federated.rs:41` | Multi-server facade with caching and failover |
 | Single-server service | `src/nntp/service.rs:47` | Per-server request handling with coalescing |
 | Workers | `src/nntp/worker.rs:141` | NNTP connection management and protocol handling |

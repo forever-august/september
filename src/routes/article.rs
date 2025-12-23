@@ -5,13 +5,16 @@
 use axum::{
     extract::{Path, Query, State},
     response::Html,
+    Extension,
 };
 use serde::Deserialize;
+use tracing::instrument;
 
-use crate::error::AppError;
+use crate::error::{AppError, AppErrorResponse, ResultExt};
+use crate::middleware::RequestId;
 use crate::state::AppState;
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ViewPath {
     pub message_id: String,
 }
@@ -22,17 +25,24 @@ pub struct ViewParams {
 }
 
 /// Fetches and displays a single article.
+#[instrument(
+    name = "article::view",
+    skip(state, params, request_id),
+    fields(message_id = %path.message_id)
+)]
 pub async fn view(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     Path(path): Path<ViewPath>,
     Query(params): Query<ViewParams>,
-) -> Result<Html<String>, AppError> {
+) -> Result<Html<String>, AppErrorResponse> {
     // Fetch article (cached + coalesced)
     let article = state
         .nntp
         .get_article(&path.message_id)
         .await
-        .map_err(|_| AppError::ArticleNotFound(path.message_id.clone()))?;
+        .map_err(|_| AppError::ArticleNotFound(path.message_id.clone()))
+        .with_request_id(&request_id)?;
 
     // Determine back link based on query param
     let (back_url, back_label) = match &params.back {
@@ -46,7 +56,11 @@ pub async fn view(
     context.insert("back_url", &back_url);
     context.insert("back_label", &back_label);
 
-    let html = state.tera.render("article/view.html", &context)?;
+    let html = state
+        .tera
+        .render("article/view.html", &context)
+        .map_err(AppError::from)
+        .with_request_id(&request_id)?;
     Ok(Html(html))
 }
 

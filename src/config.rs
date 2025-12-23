@@ -1,8 +1,8 @@
 //! Configuration loading and constants.
 //!
 //! Loads application configuration from TOML files and defines constants for
-//! HTTP cache TTLs, pagination settings, NNTP timeouts and limits, and default paths.
-//! `AppConfig` is the root configuration struct containing all settings.
+//! HTTP cache TTLs, pagination settings, NNTP timeouts and limits, logging format,
+//! and default paths. `AppConfig` is the root configuration struct containing all settings.
 
 use const_format::formatcp;
 use serde::{Deserialize, Serialize};
@@ -170,6 +170,9 @@ pub const DEFAULT_SUBJECT: &str = "(no subject)";
 /// Default log filter when RUST_LOG is not set
 pub const DEFAULT_LOG_FILTER: &str = "september=debug,tower_http=debug";
 
+/// Default log format (text or json)
+pub const DEFAULT_LOG_FORMAT: &str = "text";
+
 /// Default server name for legacy config migration
 pub const DEFAULT_SERVER_NAME: &str = "default";
 
@@ -185,6 +188,9 @@ pub struct AppConfig {
     pub ui: UiConfig,
     #[serde(default)]
     pub cache: CacheConfig,
+    /// Logging configuration
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
 /// HTTP server configuration
@@ -377,6 +383,28 @@ impl CacheConfig {
     }
     fn default_max_group_stats() -> u64 {
         1000
+    }
+}
+
+/// Logging configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct LoggingConfig {
+    /// Log format: "text" (human-readable, default) or "json" (structured)
+    #[serde(default = "LoggingConfig::default_format")]
+    pub format: String,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            format: DEFAULT_LOG_FORMAT.to_string(),
+        }
+    }
+}
+
+impl LoggingConfig {
+    fn default_format() -> String {
+        DEFAULT_LOG_FORMAT.to_string()
     }
 }
 

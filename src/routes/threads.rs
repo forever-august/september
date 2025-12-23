@@ -5,10 +5,13 @@
 use axum::{
     extract::{Path, Query, State},
     response::Html,
+    Extension,
 };
 use serde::Deserialize;
+use tracing::instrument;
 
-use crate::error::AppError;
+use crate::error::{AppError, AppErrorResponse, ResultExt};
+use crate::middleware::RequestId;
 use crate::state::AppState;
 
 /// Query parameters for thread list pagination.
@@ -18,11 +21,17 @@ pub struct ListParams {
 }
 
 /// Handler for paginated thread list in a newsgroup.
+#[instrument(
+    name = "threads::list",
+    skip(state, params, request_id),
+    fields(group = %group)
+)]
 pub async fn list(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     Path(group): Path<String>,
     Query(params): Query<ListParams>,
-) -> Result<Html<String>, AppError> {
+) -> Result<Html<String>, AppErrorResponse> {
     let page = params.page.unwrap_or(1).max(1);
     let per_page = state.config.nntp.defaults.threads_per_page;
 
@@ -30,16 +39,15 @@ pub async fn list(
     let (threads, pagination) = state
         .nntp
         .get_threads_paginated(&group, page, per_page)
-        .await?;
+        .await
+        .with_request_id(&request_id)?;
 
     // Fetch and cache group stats (article count and last article date)
     // This runs in the background so it doesn't block page load
     let nntp = state.nntp.clone();
     let group_name = group.clone();
     tokio::spawn(async move {
-        if let Err(e) = nntp.get_group_stats(&group_name).await {
-            tracing::debug!(%group_name, error = %e, "Failed to fetch group stats");
-        }
+        let _ = nntp.get_group_stats(&group_name).await;
     });
 
     let mut context = tera::Context::new();
@@ -48,12 +56,16 @@ pub async fn list(
     context.insert("threads", &threads);
     context.insert("pagination", &pagination);
 
-    let html = state.tera.render("threads/list.html", &context)?;
+    let html = state
+        .tera
+        .render("threads/list.html", &context)
+        .map_err(AppError::from)
+        .with_request_id(&request_id)?;
     Ok(Html(html))
 }
 
 /// Path parameters for thread view (group and message_id).
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ViewPath {
     pub group: String,
     pub message_id: String,
@@ -66,11 +78,17 @@ pub struct ViewParams {
 }
 
 /// Handler for viewing a thread with paginated comments.
+#[instrument(
+    name = "threads::view",
+    skip(state, params, request_id),
+    fields(group = %path.group, message_id = %path.message_id)
+)]
 pub async fn view(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     Path(path): Path<ViewPath>,
     Query(params): Query<ViewParams>,
-) -> Result<Html<String>, AppError> {
+) -> Result<Html<String>, AppErrorResponse> {
     let page = params.page.unwrap_or(1).max(1);
     let per_page = state.config.nntp.defaults.articles_per_page;
     let collapse_threshold = state.config.ui.collapse_threshold;
@@ -80,7 +98,8 @@ pub async fn view(
         .nntp
         .get_thread_paginated(&path.group, &path.message_id, page, per_page, collapse_threshold)
         .await
-        .map_err(|_| AppError::ArticleNotFound(path.message_id.clone()))?;
+        .map_err(|_| AppError::ArticleNotFound(path.message_id.clone()))
+        .with_request_id(&request_id)?;
 
     let mut context = tera::Context::new();
     context.insert("config", &state.config.ui);
@@ -89,6 +108,10 @@ pub async fn view(
     context.insert("comments", &comments);
     context.insert("pagination", &pagination);
 
-    let html = state.tera.render("threads/view.html", &context)?;
+    let html = state
+        .tera
+        .render("threads/view.html", &context)
+        .map_err(AppError::from)
+        .with_request_id(&request_id)?;
     Ok(Html(html))
 }

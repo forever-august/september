@@ -36,3 +36,8 @@ threads_ttl_seconds = 300      # 5 minutes
 groups_ttl_seconds = 3600      # 1 hour
 max_articles = 10000
 max_thread_lists = 100
+
+# Logging configuration
+[logging]
+# Log format: "text" (human-readable, default) or "json" (structured for production)
+format = "text"

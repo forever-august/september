@@ -10,12 +10,14 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_channel::Receiver;
 use nntp_rs::net_client::NntpClient;
 use nntp_rs::ListVariant;
 use tokio::time::timeout;
+
+use tracing::{instrument, Span};
 
 use crate::config::{
     NntpServerConfig, NntpSettings, DEFAULT_SUBJECT, NNTP_MAX_ARTICLES_HEAD_FALLBACK,
@@ -165,7 +167,14 @@ impl NntpWorker {
 
     /// Run the worker loop - connects to NNTP and processes requests
     pub async fn run(self) {
-        tracing::info!(worker = self.id, server = %self.server_name, "NNTP worker starting");
+        let worker_span = tracing::info_span!(
+            "nntp.worker",
+            worker_id = self.id,
+            server = %self.server_name,
+        );
+        let _guard = worker_span.enter();
+
+        tracing::info!("Worker starting");
 
         loop {
             // Connect/reconnect to NNTP server
@@ -182,16 +191,16 @@ impl NntpWorker {
             let mut client = match timeout(connect_timeout, NntpClient::<NntpStream>::connect(&addr)).await {
                 Ok(Ok(client)) => {
                     let tls_status = if super::tls::last_connection_was_tls() { "TLS" } else { "plain TCP" };
-                    tracing::info!(worker = self.id, server = %addr, tls = %tls_status, "Connected to NNTP server");
+                    tracing::info!(tls = %tls_status, "Connected to NNTP server");
                     client
                 }
                 Ok(Err(e)) => {
-                    tracing::error!(worker = self.id, error = %e, "Failed to connect to NNTP server");
+                    tracing::error!(error = %e, "Failed to connect");
                     tokio::time::sleep(Duration::from_secs(NNTP_RECONNECT_DELAY_SECS)).await;
                     continue;
                 }
                 Err(_) => {
-                    tracing::error!(worker = self.id, "Connection timeout to NNTP server");
+                    tracing::error!("Connection timeout");
                     tokio::time::sleep(Duration::from_secs(NNTP_RECONNECT_DELAY_SECS)).await;
                     continue;
                 }
@@ -205,10 +214,10 @@ impl NntpWorker {
 
                 match client.authenticate(username, password).await {
                     Ok(()) => {
-                        tracing::info!(worker = self.id, "Authenticated successfully");
+                        tracing::info!("Authenticated successfully");
                     }
                     Err(e) => {
-                        tracing::error!(worker = self.id, error = %e, "Authentication failed");
+                        tracing::error!(error = %e, "Authentication failed");
                         tokio::time::sleep(Duration::from_secs(NNTP_RECONNECT_DELAY_SECS)).await;
                         continue;
                     }
@@ -219,8 +228,7 @@ impl NntpWorker {
             let mut capabilities = match client.capabilities().await {
                 Ok(caps) => {
                     let server_caps = ServerCapabilities::from_capabilities(&caps);
-                    tracing::debug!(
-                        worker = self.id,
+                    tracing::trace!(
                         list_variants = ?server_caps.list_variants,
                         hdr_supported = server_caps.hdr_supported,
                         over_supported = server_caps.over_supported,
@@ -229,8 +237,7 @@ impl NntpWorker {
                     server_caps
                 }
                 Err(e) => {
-                    tracing::debug!(
-                        worker = self.id,
+                    tracing::trace!(
                         error = %e,
                         "Failed to get capabilities, will use fallback behavior"
                     );
@@ -247,14 +254,12 @@ impl NntpWorker {
                             // We need to check the raw response. For now, assume References is present
                             // as it's part of the standard RFC 3977 overview format.
                             capabilities.references_in_overview = true;
-                            tracing::debug!(
-                                worker = self.id,
+                            tracing::trace!(
                                 "OVERVIEW.FMT retrieved, assuming References field present"
                             );
                         }
                         Err(e) => {
-                            tracing::debug!(
-                                worker = self.id,
+                            tracing::trace!(
                                 error = %e,
                                 "Failed to get OVERVIEW.FMT, assuming standard format"
                             );
@@ -269,7 +274,6 @@ impl NntpWorker {
             }
 
             tracing::info!(
-                worker = self.id,
                 method = ?capabilities.thread_fetch_method(),
                 "Thread fetch method selected"
             );
@@ -279,7 +283,7 @@ impl NntpWorker {
                 let request = match self.requests.recv().await {
                     Ok(req) => req,
                     Err(_) => {
-                        tracing::info!(worker = self.id, "Request channel closed, worker shutting down");
+                        tracing::info!("Request channel closed, worker shutting down");
                         return;
                     }
                 };
@@ -293,7 +297,7 @@ impl NntpWorker {
                 request.respond(result);
 
                 if should_reconnect {
-                    tracing::warn!(worker = self.id, "Connection error, will reconnect");
+                    tracing::warn!("Connection error, will reconnect");
                     break;
                 }
             }
@@ -301,7 +305,25 @@ impl NntpWorker {
     }
 
     /// Handle a single request
+    #[instrument(
+        name = "nntp.worker.handle_request",
+        skip(self, client, request, capabilities),
+        fields(operation, duration_ms)
+    )]
     async fn handle_request(
+        &self,
+        client: &mut NntpClient<NntpStream>,
+        request: &NntpRequest,
+        capabilities: &ServerCapabilities,
+    ) -> Result<NntpResponse, NntpError> {
+        let start = Instant::now();
+        let result = self.handle_request_inner(client, request, capabilities).await;
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+        result
+    }
+
+    /// Inner request handling logic
+    async fn handle_request_inner(
         &self,
         client: &mut NntpClient<NntpStream>,
         request: &NntpRequest,
@@ -309,7 +331,8 @@ impl NntpWorker {
     ) -> Result<NntpResponse, NntpError> {
         match request {
             NntpRequest::GetGroups { .. } => {
-                tracing::debug!(worker = self.id, "Fetching group list");
+                Span::current().record("operation", "get_groups");
+                tracing::debug!("Fetching group list");
 
                 // Get LIST variants to try based on server capabilities
                 let list_variants = capabilities.get_list_variants();
@@ -319,7 +342,6 @@ impl NntpWorker {
                     match client.list(variant).await {
                         Ok(groups) => {
                             tracing::debug!(
-                                worker = self.id,
                                 variant = variant_name,
                                 count = groups.len(),
                                 "Successfully fetched groups"
@@ -336,7 +358,6 @@ impl NntpWorker {
                         }
                         Err(e) => {
                             tracing::debug!(
-                                worker = self.id,
                                 variant = variant_name,
                                 error = %e,
                                 "LIST variant not supported, trying next"
@@ -354,8 +375,9 @@ impl NntpWorker {
             }
 
             NntpRequest::GetThreads { group, count, .. } => {
+                Span::current().record("operation", "get_threads");
                 let method = capabilities.thread_fetch_method();
-                tracing::debug!(worker = self.id, %group, %count, ?method, "Fetching threads");
+                tracing::debug!(%group, %count, ?method, "Fetching threads");
 
                 // Select group first
                 let stats = client
@@ -377,7 +399,6 @@ impl NntpWorker {
                             Ok(threads) => threads,
                             Err(e) => {
                                 tracing::warn!(
-                                    worker = self.id,
                                     error = %e,
                                     "HDR fetch failed, falling back to OVER"
                                 );
@@ -425,8 +446,9 @@ impl NntpWorker {
             }
 
             NntpRequest::GetThread { group, message_id, .. } => {
+                Span::current().record("operation", "get_thread");
                 let method = capabilities.thread_fetch_method();
-                tracing::debug!(worker = self.id, %group, %message_id, ?method, "Fetching single thread");
+                tracing::debug!(%group, %message_id, ?method, "Fetching single thread");
 
                 // Select group
                 let stats = client
@@ -448,7 +470,6 @@ impl NntpWorker {
                             Ok(threads) => threads,
                             Err(e) => {
                                 tracing::warn!(
-                                    worker = self.id,
                                     error = %e,
                                     "HDR fetch failed, falling back to OVER"
                                 );
@@ -483,7 +504,8 @@ impl NntpWorker {
             }
 
             NntpRequest::GetArticle { message_id, .. } => {
-                tracing::debug!(worker = self.id, %message_id, "Fetching article");
+                Span::current().record("operation", "get_article");
+                tracing::debug!(%message_id, "Fetching article");
                 let article = client
                     .article(nntp_rs::ArticleSpec::MessageId(message_id.clone()))
                     .await
@@ -493,7 +515,8 @@ impl NntpWorker {
             }
 
             NntpRequest::GetGroupStats { group, .. } => {
-                tracing::debug!(worker = self.id, %group, "Fetching group stats");
+                Span::current().record("operation", "get_group_stats");
+                tracing::debug!(%group, "Fetching group stats");
 
                 // Select the group to get article range
                 let stats = client
@@ -510,7 +533,6 @@ impl NntpWorker {
                         }
                         Err(e) => {
                             tracing::debug!(
-                                worker = self.id,
                                 %group,
                                 error = %e,
                                 "HDR command failed, trying HEAD fallback"
@@ -526,7 +548,6 @@ impl NntpWorker {
                                 }
                                 Err(e) => {
                                     tracing::warn!(
-                                        worker = self.id,
                                         %group,
                                         error = %e,
                                         "Failed to get last article date"
@@ -548,7 +569,8 @@ impl NntpWorker {
             }
 
             NntpRequest::GetNewArticles { group, since_article_number, .. } => {
-                tracing::debug!(worker = self.id, %group, %since_article_number, "Fetching new articles");
+                Span::current().record("operation", "get_new_articles");
+                tracing::debug!(%group, %since_article_number, "Fetching new articles");
 
                 // Select the group to get current article range
                 let stats = client
@@ -559,7 +581,6 @@ impl NntpWorker {
                 if stats.last <= *since_article_number {
                     // No new articles
                     tracing::debug!(
-                        worker = self.id,
                         %group,
                         last = stats.last,
                         since = *since_article_number,
@@ -571,7 +592,6 @@ impl NntpWorker {
                 // Fetch only new articles using OVER command with range
                 let range = format!("{}-", *since_article_number + 1);
                 tracing::debug!(
-                    worker = self.id,
                     %group,
                     %range,
                     "Fetching overview for range"
@@ -583,7 +603,6 @@ impl NntpWorker {
                     .map_err(|e| NntpError(e.to_string()))?;
 
                 tracing::debug!(
-                    worker = self.id,
                     %group,
                     entry_count = entries.len(),
                     "Fetched new article overview entries"
@@ -601,7 +620,7 @@ impl NntpWorker {
         client: &mut NntpClient<NntpStream>,
         range: &str,
     ) -> Result<Vec<super::ThreadView>, NntpError> {
-        tracing::debug!(worker = self.id, %range, "Fetching threads via HDR");
+        tracing::debug!(%range, "Fetching threads via HDR");
 
         // Fetch each required header field
         let message_ids = client
@@ -629,8 +648,7 @@ impl NntpWorker {
             .await
             .map_err(|e| NntpError(format!("HDR Date failed: {}", e)))?;
 
-        tracing::debug!(
-            worker = self.id,
+        tracing::trace!(
             message_id_count = message_ids.len(),
             references_count = references.len(),
             subjects_count = subjects.len(),
@@ -691,8 +709,7 @@ impl NntpWorker {
             });
         }
 
-        tracing::debug!(
-            worker = self.id,
+        tracing::trace!(
             article_count = articles.len(),
             "Built article data from HDR responses"
         );
@@ -708,7 +725,7 @@ impl NntpWorker {
         start: u64,
         end: u64,
     ) -> Result<Vec<super::ThreadView>, NntpError> {
-        tracing::debug!(worker = self.id, start, end, "Fetching threads via HEAD (slow)");
+        tracing::debug!(start, end, "Fetching threads via HEAD (slow)");
 
         let mut articles: Vec<HdrArticleData> = Vec::new();
 
@@ -768,7 +785,6 @@ impl NntpWorker {
                 Err(e) => {
                     // Article might be deleted, skip it
                     tracing::trace!(
-                        worker = self.id,
                         article_num,
                         error = %e,
                         "Failed to fetch HEAD, skipping"
@@ -777,8 +793,7 @@ impl NntpWorker {
             }
         }
 
-        tracing::debug!(
-            worker = self.id,
+        tracing::trace!(
             article_count = articles.len(),
             "Built article data from HEAD responses"
         );

@@ -8,9 +8,12 @@ use std::collections::HashMap;
 use axum::{
     extract::{Path, State},
     response::Html,
+    Extension,
 };
+use tracing::instrument;
 
-use crate::error::AppError;
+use crate::error::{AppError, AppErrorResponse, ResultExt};
+use crate::middleware::RequestId;
 use crate::nntp::GroupTreeNode;
 use crate::state::AppState;
 
@@ -50,9 +53,13 @@ async fn get_stats_for_groups(
 }
 
 /// Home page handler showing all newsgroups in a tree hierarchy.
-pub async fn index(State(state): State<AppState>) -> Result<Html<String>, AppError> {
+#[instrument(name = "home::index", skip(state, request_id))]
+pub async fn index(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<Html<String>, AppErrorResponse> {
     // Fetch all groups (cached + coalesced)
-    let groups = state.nntp.get_groups().await?;
+    let groups = state.nntp.get_groups().await.with_request_id(&request_id)?;
 
     // Build tree hierarchy
     let tree = GroupTreeNode::build_tree(&groups);
@@ -82,17 +89,23 @@ pub async fn index(State(state): State<AppState>) -> Result<Html<String>, AppErr
     context.insert("group_stats", &group_stats);
     context.insert("thread_counts", &thread_counts);
 
-    let html = state.tera.render("home.html", &context)?;
+    let html = state
+        .tera
+        .render("home.html", &context)
+        .map_err(AppError::from)
+        .with_request_id(&request_id)?;
     Ok(Html(html))
 }
 
 /// Browse handler for navigating into group hierarchy by prefix path.
+#[instrument(name = "home::browse", skip(state, request_id), fields(prefix = %prefix))]
 pub async fn browse(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     Path(prefix): Path<String>,
-) -> Result<Html<String>, AppError> {
+) -> Result<Html<String>, AppErrorResponse> {
     // Fetch all groups (cached + coalesced)
-    let groups = state.nntp.get_groups().await?;
+    let groups = state.nntp.get_groups().await.with_request_id(&request_id)?;
 
     // Build initial tree to find which groups are visible at this path
     let initial_tree = GroupTreeNode::build_tree(&groups);
@@ -126,7 +139,8 @@ pub async fn browse(
 
     // Find children at the given path
     let nodes_with_stats = GroupTreeNode::find_children_at_path(&tree, &prefix)
-        .ok_or_else(|| AppError::Internal(format!("Path not found: {}", prefix)))?;
+        .ok_or_else(|| AppError::Internal(format!("Path not found: {}", prefix)))
+        .with_request_id(&request_id)?;
 
     // Find the current node (to check if it's also a group)
     let current_node = GroupTreeNode::find_node_at_path(&tree, &prefix);
@@ -153,6 +167,10 @@ pub async fn browse(
     context.insert("group_stats", &group_stats);
     context.insert("thread_counts", &thread_counts);
 
-    let html = state.tera.render("home.html", &context)?;
+    let html = state
+        .tera
+        .render("home.html", &context)
+        .map_err(AppError::from)
+        .with_request_id(&request_id)?;
     Ok(Html(html))
 }

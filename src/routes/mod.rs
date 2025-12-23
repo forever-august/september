@@ -3,12 +3,15 @@
 //! Routes are organized by content type, with per-route Cache-Control headers.
 //! Immutable content (articles) uses longer cache durations, while dynamic
 //! content (thread lists) uses shorter durations.
+//!
+//! Request tracing is enabled via middleware that generates a unique request ID
+//! for each incoming request, allowing correlation of all logs within a request.
 
 pub mod article;
 pub mod home;
 pub mod threads;
 
-use axum::{routing::get, Router};
+use axum::{middleware, routing::get, Router};
 use http::header::{HeaderValue, CACHE_CONTROL};
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 
@@ -16,6 +19,7 @@ use crate::config::{
     CACHE_CONTROL_ARTICLE, CACHE_CONTROL_HOME, CACHE_CONTROL_STATIC, CACHE_CONTROL_THREAD_LIST,
     CACHE_CONTROL_THREAD_VIEW, STATIC_DIR,
 };
+use crate::middleware::request_id_layer;
 use crate::state::AppState;
 
 /// Creates the Axum router with all routes and cache headers.
@@ -68,4 +72,6 @@ pub fn create_router(state: AppState) -> Router {
         .merge(home_routes)
         .merge(static_routes)
         .with_state(state)
+        // Request ID middleware - creates root span with request_id for correlation
+        .layer(middleware::from_fn(request_id_layer))
 }

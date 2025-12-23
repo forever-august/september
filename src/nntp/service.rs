@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use async_channel::{Receiver, Sender};
 use tokio::sync::{broadcast, oneshot, Mutex};
+use tracing::instrument;
 
 use nntp_rs::OverviewEntry;
 
@@ -109,15 +110,21 @@ impl NntpService {
     }
 
     /// Fetch an article by message ID
+    #[instrument(
+        name = "nntp.service.get_article",
+        skip(self),
+        fields(server = %self.name, coalesced = false, duration_ms)
+    )]
     pub async fn get_article(&self, message_id: &str) -> Result<ArticleView, NntpError> {
+        let start = Instant::now();
         // Check for pending request (coalesce if not timed out)
         let mut pending = self.pending.articles.lock().await;
         if let Some((tx, started_at)) = pending.get(message_id) {
             if started_at.elapsed() < self.request_timeout {
                 let mut rx = tx.subscribe();
                 drop(pending); // Release lock while waiting
+                tracing::Span::current().record("coalesced", true);
 
-                tracing::debug!(server = %self.name, %message_id, "Coalescing with pending article request");
                 return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
                     Ok(Ok(result)) => result,
                     Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
@@ -156,11 +163,18 @@ impl NntpService {
         self.pending.articles.lock().await.remove(message_id);
         let _ = tx.send(result.clone());
 
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         result
     }
 
     /// Fetch recent threads from a newsgroup
+    #[instrument(
+        name = "nntp.service.get_threads",
+        skip(self),
+        fields(server = %self.name, coalesced = false, duration_ms)
+    )]
     pub async fn get_threads(&self, group: &str, count: u64) -> Result<Vec<ThreadView>, NntpError> {
+        let start = Instant::now();
         let cache_key = format!("{}:{}", group, count);
 
         // Check for pending request (coalesce if not timed out)
@@ -169,8 +183,8 @@ impl NntpService {
             if started_at.elapsed() < self.request_timeout {
                 let mut rx = tx.subscribe();
                 drop(pending);
+                tracing::Span::current().record("coalesced", true);
 
-                tracing::debug!(server = %self.name, %group, %count, "Coalescing with pending threads request");
                 return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
                     Ok(Ok(result)) => result.map(unwrap_arc),
                     Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
@@ -208,11 +222,18 @@ impl NntpService {
         self.pending.threads.lock().await.remove(&cache_key);
         let _ = tx.send(result.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.clone()));
 
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         result
     }
 
     /// Fetch a single thread by group and root message ID
+    #[instrument(
+        name = "nntp.service.get_thread",
+        skip(self),
+        fields(server = %self.name, coalesced = false, duration_ms)
+    )]
     pub async fn get_thread(&self, group: &str, message_id: &str) -> Result<ThreadView, NntpError> {
+        let start = Instant::now();
         let cache_key = format!("{}:{}", group, message_id);
 
         // Check for pending request (coalesce if not timed out)
@@ -221,8 +242,8 @@ impl NntpService {
             if started_at.elapsed() < self.request_timeout {
                 let mut rx = tx.subscribe();
                 drop(pending);
+                tracing::Span::current().record("coalesced", true);
 
-                tracing::debug!(server = %self.name, %group, %message_id, "Coalescing with pending thread request");
                 return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
                     Ok(Ok(result)) => result.map(unwrap_arc),
                     Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
@@ -260,19 +281,26 @@ impl NntpService {
         self.pending.thread.lock().await.remove(&cache_key);
         let _ = tx.send(result.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.clone()));
 
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         result
     }
 
     /// Fetch the list of available newsgroups
+    #[instrument(
+        name = "nntp.service.get_groups",
+        skip(self),
+        fields(server = %self.name, coalesced = false, duration_ms)
+    )]
     pub async fn get_groups(&self) -> Result<Vec<GroupView>, NntpError> {
+        let start = Instant::now();
         // Check for pending request (coalesce if not timed out)
         let mut pending = self.pending.groups.lock().await;
         if let Some((tx, started_at)) = pending.as_ref() {
             if started_at.elapsed() < self.request_timeout {
                 let mut rx = tx.subscribe();
                 drop(pending);
+                tracing::Span::current().record("coalesced", true);
 
-                tracing::debug!(server = %self.name, "Coalescing with pending groups request");
                 return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
                     Ok(Ok(result)) => result.map(unwrap_arc),
                     Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
@@ -306,19 +334,26 @@ impl NntpService {
         *self.pending.groups.lock().await = None;
         let _ = tx.send(result.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.clone()));
 
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         result
     }
 
     /// Fetch group statistics (article count and last article date)
+    #[instrument(
+        name = "nntp.service.get_group_stats",
+        skip(self),
+        fields(server = %self.name, coalesced = false, duration_ms)
+    )]
     pub async fn get_group_stats(&self, group: &str) -> Result<GroupStatsView, NntpError> {
+        let start = Instant::now();
         // Check for pending request (coalesce if not timed out)
         let mut pending = self.pending.group_stats.lock().await;
         if let Some((tx, started_at)) = pending.get(group) {
             if started_at.elapsed() < self.request_timeout {
                 let mut rx = tx.subscribe();
                 drop(pending);
+                tracing::Span::current().record("coalesced", true);
 
-                tracing::debug!(server = %self.name, %group, "Coalescing with pending group stats request");
                 return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
                     Ok(Ok(result)) => result,
                     Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
@@ -356,16 +391,23 @@ impl NntpService {
         self.pending.group_stats.lock().await.remove(group);
         let _ = tx.send(result.clone());
 
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         result
     }
 
     /// Fetch new articles since a given article number (for incremental updates)
     /// Note: No coalescing for this request as it's parameterized by article number
+    #[instrument(
+        name = "nntp.service.get_new_articles",
+        skip(self),
+        fields(server = %self.name, duration_ms)
+    )]
     pub async fn get_new_articles(
         &self,
         group: &str,
         since_article_number: u64,
     ) -> Result<Vec<OverviewEntry>, NntpError> {
+        let start = Instant::now();
         let (resp_tx, resp_rx) = oneshot::channel();
         self.request_tx
             .send(NntpRequest::GetNewArticles {
@@ -378,7 +420,10 @@ impl NntpService {
 
         // Wait for result with timeout
         match tokio::time::timeout(self.request_timeout, resp_rx).await {
-            Ok(Ok(result)) => result,
+            Ok(Ok(result)) => {
+                tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+                result
+            }
             Ok(Err(_)) => Err(NntpError("Worker dropped request".into())),
             Err(_) => Err(NntpError("Request timeout".into())),
         }

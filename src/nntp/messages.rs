@@ -24,7 +24,8 @@ impl std::error::Error for NntpError {}
 /// Group statistics including last article date
 #[derive(Debug, Clone)]
 pub struct GroupStatsView {
-    /// Number of articles in the group
+    /// Number of articles in the group (available for display/API use)
+    #[allow(dead_code)]
     pub article_count: u64,
     /// Date of the last article (RFC 2822 format)
     pub last_article_date: Option<String>,
@@ -70,6 +71,19 @@ pub enum NntpRequest {
 }
 
 impl NntpRequest {
+    /// Get operation name for tracing spans (available for metrics/debugging)
+    #[allow(dead_code)]
+    pub fn operation_name(&self) -> &'static str {
+        match self {
+            NntpRequest::GetGroups { .. } => "get_groups",
+            NntpRequest::GetThreads { .. } => "get_threads",
+            NntpRequest::GetThread { .. } => "get_thread",
+            NntpRequest::GetArticle { .. } => "get_article",
+            NntpRequest::GetGroupStats { .. } => "get_group_stats",
+            NntpRequest::GetNewArticles { .. } => "get_new_articles",
+        }
+    }
+
     /// Send the response for this request
     pub fn respond(self, result: Result<NntpResponse, NntpError>) {
         match self {

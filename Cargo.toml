@@ -35,7 +35,10 @@ thiserror = "2"
 
 # Logging and tracing
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Request ID generation
+uuid = { version = "1", features = ["v4"] }
 
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }
