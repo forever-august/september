@@ -2,7 +2,10 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse, Response},
 };
+use http::header::CACHE_CONTROL;
 use std::io;
+
+use crate::config::CACHE_CONTROL_ERROR;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -66,6 +69,6 @@ impl IntoResponse for AppError {
             message
         );
 
-        (status, Html(body)).into_response()
+        (status, [(CACHE_CONTROL, CACHE_CONTROL_ERROR)], Html(body)).into_response()
     }
 }

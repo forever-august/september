@@ -1,5 +1,78 @@
+use const_format::formatcp;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+// =============================================================================
+// HTTP Response Cache Control
+// =============================================================================
+// These constants control Cache-Control headers for upstream caches (Varnish, nginx, CDNs).
+// All values are in seconds. Directives used:
+// - max-age: How long the response is considered fresh
+// - stale-while-revalidate: Serve stale while fetching fresh in background
+// - stale-if-error: Serve stale content if origin returns 5xx (thundering herd protection)
+//
+// References:
+// - RFC 9111 (HTTP Caching): https://httpwg.org/specs/rfc9111.html
+// - RFC 5861 (stale-* extensions): https://httpwg.org/specs/rfc5861.html
+
+/// Home and browse pages - group listings change infrequently
+pub const HTTP_CACHE_HOME_MAX_AGE: u32 = 60;
+pub const HTTP_CACHE_HOME_SWR: u32 = 30;
+
+/// Thread list - new threads appear regularly
+pub const HTTP_CACHE_THREAD_LIST_MAX_AGE: u32 = 30;
+pub const HTTP_CACHE_THREAD_LIST_SWR: u32 = 30;
+
+/// Thread view - may receive new replies
+pub const HTTP_CACHE_THREAD_VIEW_MAX_AGE: u32 = 120;
+pub const HTTP_CACHE_THREAD_VIEW_SWR: u32 = 60;
+
+/// Individual articles - immutable content
+pub const HTTP_CACHE_ARTICLE_MAX_AGE: u32 = 3600;
+pub const HTTP_CACHE_ARTICLE_SWR: u32 = 60;
+
+/// Static assets (CSS, JS) - long cache with immutable hint
+pub const HTTP_CACHE_STATIC_MAX_AGE: u32 = 86400;
+
+/// Error responses - short TTL to prevent thundering herd while allowing quick recovery
+pub const HTTP_CACHE_ERROR_MAX_AGE: u32 = 5;
+
+/// Stale-if-error duration - serve stale content during backend failures (5 minutes)
+pub const HTTP_CACHE_STALE_IF_ERROR: u32 = 300;
+
+// Pre-formatted Cache-Control header values (compile-time string concatenation)
+pub const CACHE_CONTROL_HOME: &str = formatcp!(
+    "public, max-age={}, stale-while-revalidate={}, stale-if-error={}",
+    HTTP_CACHE_HOME_MAX_AGE,
+    HTTP_CACHE_HOME_SWR,
+    HTTP_CACHE_STALE_IF_ERROR
+);
+
+pub const CACHE_CONTROL_THREAD_LIST: &str = formatcp!(
+    "public, max-age={}, stale-while-revalidate={}, stale-if-error={}",
+    HTTP_CACHE_THREAD_LIST_MAX_AGE,
+    HTTP_CACHE_THREAD_LIST_SWR,
+    HTTP_CACHE_STALE_IF_ERROR
+);
+
+pub const CACHE_CONTROL_THREAD_VIEW: &str = formatcp!(
+    "public, max-age={}, stale-while-revalidate={}, stale-if-error={}",
+    HTTP_CACHE_THREAD_VIEW_MAX_AGE,
+    HTTP_CACHE_THREAD_VIEW_SWR,
+    HTTP_CACHE_STALE_IF_ERROR
+);
+
+pub const CACHE_CONTROL_ARTICLE: &str = formatcp!(
+    "public, max-age={}, stale-while-revalidate={}, stale-if-error={}",
+    HTTP_CACHE_ARTICLE_MAX_AGE,
+    HTTP_CACHE_ARTICLE_SWR,
+    HTTP_CACHE_STALE_IF_ERROR
+);
+
+pub const CACHE_CONTROL_STATIC: &str =
+    formatcp!("public, max-age={}, immutable", HTTP_CACHE_STATIC_MAX_AGE);
+
+pub const CACHE_CONTROL_ERROR: &str = formatcp!("public, max-age={}", HTTP_CACHE_ERROR_MAX_AGE);
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {

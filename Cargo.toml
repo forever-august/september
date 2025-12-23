@@ -9,7 +9,8 @@ license = "Apache-2.0"
 # Web framework
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["fs", "trace"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "set-header"] }
+http = "1"
 
 # NNTP client
 nntp-rs = { git = "https://github.com/forever-august/nntp-rs", features = ["tokio-runtime"] }
@@ -27,6 +28,7 @@ tera = "1"
 # Configuration
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+const_format = "0.2"
 
 # Error handling
 thiserror = "2"

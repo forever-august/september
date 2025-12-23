@@ -3,17 +3,62 @@ pub mod home;
 pub mod threads;
 
 use axum::{routing::get, Router};
-use tower_http::services::ServeDir;
+use http::header::{HeaderValue, CACHE_CONTROL};
+use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 
+use crate::config::{
+    CACHE_CONTROL_ARTICLE, CACHE_CONTROL_HOME, CACHE_CONTROL_STATIC, CACHE_CONTROL_THREAD_LIST,
+    CACHE_CONTROL_THREAD_VIEW,
+};
 use crate::state::AppState;
 
 pub fn create_router(state: AppState) -> Router {
-    Router::new()
+    // Articles - longest cache, content is immutable
+    let article_routes = Router::new()
+        .route("/a/{message_id}", get(article::view))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            CACHE_CONTROL,
+            HeaderValue::from_static(CACHE_CONTROL_ARTICLE),
+        ));
+
+    // Thread view - medium cache, may get new replies
+    let thread_view_routes = Router::new()
+        .route("/g/{group}/thread/{message_id}", get(threads::view))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            CACHE_CONTROL,
+            HeaderValue::from_static(CACHE_CONTROL_THREAD_VIEW),
+        ));
+
+    // Thread list - shorter cache, new threads appear regularly
+    let thread_list_routes = Router::new()
+        .route("/g/{group}", get(threads::list))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            CACHE_CONTROL,
+            HeaderValue::from_static(CACHE_CONTROL_THREAD_LIST),
+        ));
+
+    // Home/browse - moderate cache
+    let home_routes = Router::new()
         .route("/", get(home::index))
         .route("/browse/{*prefix}", get(home::browse))
-        .route("/g/{group}", get(threads::list))
-        .route("/g/{group}/thread/{message_id}", get(threads::view))
-        .route("/a/{message_id}", get(article::view))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            CACHE_CONTROL,
+            HeaderValue::from_static(CACHE_CONTROL_HOME),
+        ));
+
+    // Static files - long cache with immutable hint
+    let static_routes = Router::new()
         .nest_service("/static", ServeDir::new("static"))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            CACHE_CONTROL,
+            HeaderValue::from_static(CACHE_CONTROL_STATIC),
+        ));
+
+    Router::new()
+        .merge(article_routes)
+        .merge(thread_view_routes)
+        .merge(thread_list_routes)
+        .merge(home_routes)
+        .merge(static_routes)
         .with_state(state)
 }
