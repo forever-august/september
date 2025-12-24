@@ -8,10 +8,11 @@
 //! for each incoming request, allowing correlation of all logs within a request.
 
 pub mod article;
+pub mod auth;
 pub mod home;
 pub mod threads;
 
-use axum::{middleware, routing::get, Router};
+use axum::{middleware, routing::{get, post}, Router};
 use http::header::{HeaderValue, CACHE_CONTROL};
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 
@@ -19,7 +20,7 @@ use crate::config::{
     CACHE_CONTROL_ARTICLE, CACHE_CONTROL_HOME, CACHE_CONTROL_STATIC, CACHE_CONTROL_THREAD_LIST,
     CACHE_CONTROL_THREAD_VIEW, STATIC_DIR,
 };
-use crate::middleware::request_id_layer;
+use crate::middleware::{auth_layer, request_id_layer};
 use crate::state::AppState;
 
 /// Creates the Axum router with all routes and cache headers.
@@ -65,13 +66,23 @@ pub fn create_router(state: AppState) -> Router {
             HeaderValue::from_static(CACHE_CONTROL_STATIC),
         ));
 
+    // Auth routes - no caching (stateful)
+    let auth_routes = Router::new()
+        .route("/auth/login", get(auth::login))
+        .route("/auth/login/{provider}", get(auth::login_provider))
+        .route("/auth/callback/{provider}", get(auth::callback))
+        .route("/auth/logout", post(auth::logout));
+
     Router::new()
         .merge(article_routes)
         .merge(thread_view_routes)
         .merge(thread_list_routes)
         .merge(home_routes)
+        .merge(auth_routes)
         .merge(static_routes)
-        .with_state(state)
+        .with_state(state.clone())
+        // Auth layer - extracts user from session cookie and handles session refresh
+        .layer(middleware::from_fn_with_state(state, auth_layer))
         // Request ID middleware - creates root span with request_id for correlation
         .layer(middleware::from_fn(request_id_layer))
 }

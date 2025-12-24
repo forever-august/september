@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tracing::instrument;
 
 use crate::error::{AppError, AppErrorResponse, ResultExt};
-use crate::middleware::RequestId;
+use crate::middleware::{CurrentUser, RequestId};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -27,12 +27,13 @@ pub struct ViewParams {
 /// Fetches and displays a single article.
 #[instrument(
     name = "article::view",
-    skip(state, params, request_id),
+    skip(state, params, request_id, current_user),
     fields(message_id = %path.message_id)
 )]
 pub async fn view(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(path): Path<ViewPath>,
     Query(params): Query<ViewParams>,
 ) -> Result<Html<String>, AppErrorResponse> {
@@ -55,6 +56,14 @@ pub async fn view(
     context.insert("article", &article);
     context.insert("back_url", &back_url);
     context.insert("back_label", &back_label);
+
+    // Auth context for header
+    context.insert("oidc_enabled", &state.oidc.is_some());
+    if let Some(user) = current_user.0.as_ref() {
+        context.insert("user", &serde_json::json!({
+            "display_name": user.display_name(),
+        }));
+    }
 
     let html = state
         .tera

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block title %}{{ config.site_name }} - Authentication Error{% endblock %}
+
+{% block content %}
+<div class="error-page">
+    <h1>Authentication Error</h1>
+    <p>{{ message }}</p>
+    <a href="/">Return to homepage</a>
+</div>
+{% endblock %}

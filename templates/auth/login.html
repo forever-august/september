@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}{{ config.site_name }} - Login{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Login</h1>
+    <p class="page-description">Choose a provider to sign in</p>
+</div>
+
+<div class="auth-providers">
+    {% for provider in providers %}
+    <a href="/auth/login/{{ provider.name }}{% if return_to %}?return_to={{ return_to | urlencode_strict }}{% endif %}" class="auth-provider-link">
+        <span class="provider-name">{{ provider.display_name }}</span>
+    </a>
+    {% endfor %}
+</div>
+
+<div class="auth-footer">
+    <a href="/">Cancel</a>
+</div>
+{% endblock %}

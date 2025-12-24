@@ -8,6 +8,7 @@ mod config;
 mod error;
 mod middleware;
 mod nntp;
+mod oidc;
 mod routes;
 mod state;
 mod templates;
@@ -38,6 +39,7 @@ struct Args {
 use std::sync::Arc;
 
 use nntp::NntpFederatedService;
+use oidc::OidcManager;
 use routes::create_router;
 use state::AppState;
 use templates::init_templates;
@@ -112,8 +114,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Arc::new(nntp_service.clone()).spawn_background_refresh();
     tracing::info!("Spawned background refresh task");
 
+    // Initialize OIDC if configured
+    let oidc = if let Some(ref oidc_config) = config.oidc {
+        match OidcManager::new(oidc_config).await {
+            Ok(manager) => {
+                tracing::info!(
+                    providers = manager.provider_count(),
+                    "Initialized OIDC authentication"
+                );
+                Some(manager)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to initialize OIDC");
+                return Err(e.into());
+            }
+        }
+    } else {
+        tracing::info!("OIDC not configured, authentication disabled");
+        None
+    };
+
     // Create application state
-    let state = AppState::new(config.clone(), tera, nntp_service);
+    let state = AppState::new(config.clone(), tera, nntp_service, oidc);
 
     // Create router
     let app = create_router(state);

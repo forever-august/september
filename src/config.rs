@@ -228,6 +228,9 @@ pub struct AppConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// OpenID Connect authentication (optional)
+    #[serde(default)]
+    pub oidc: Option<OidcConfig>,
 }
 
 /// HTTP server configuration
@@ -464,6 +467,18 @@ impl AppConfig {
             ));
         }
 
+        // Validate OIDC providers if configured
+        if let Some(ref oidc) = config.oidc {
+            if oidc.providers.is_empty() {
+                return Err(ConfigError::Validation(
+                    "OIDC configured but no providers defined. Add [[oidc.provider]] sections.".to_string()
+                ));
+            }
+            for provider in &oidc.providers {
+                provider.validate()?;
+            }
+        }
+
         Ok(config)
     }
 }
@@ -476,4 +491,170 @@ pub enum ConfigError {
     Parse(#[from] toml::de::Error),
     #[error("Configuration error: {0}")]
     Validation(String),
+    #[error("Secret resolution failed: {0}")]
+    SecretResolution(String),
+}
+
+/// Resolve a secret value from various sources.
+/// Supports:
+/// - `env:VAR_NAME` - read from environment variable
+/// - `file:/path/to/secret` - read from file (trimmed)
+/// - literal value - used as-is
+pub fn resolve_secret(value: &str) -> Result<String, ConfigError> {
+    if let Some(var_name) = value.strip_prefix("env:") {
+        std::env::var(var_name).map_err(|e| {
+            ConfigError::SecretResolution(format!(
+                "Failed to read environment variable '{}': {}",
+                var_name, e
+            ))
+        })
+    } else if let Some(file_path) = value.strip_prefix("file:") {
+        std::fs::read_to_string(file_path)
+            .map(|s| s.trim().to_string())
+            .map_err(|e| {
+                ConfigError::SecretResolution(format!(
+                    "Failed to read secret file '{}': {}",
+                    file_path, e
+                ))
+            })
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+/// OpenID Connect configuration (optional section)
+#[derive(Debug, Clone, Deserialize)]
+pub struct OidcConfig {
+    /// Secret for signing session cookies.
+    /// Supports: env:VAR_NAME, file:/path, or literal value (64+ chars recommended)
+    pub cookie_secret: String,
+    
+    /// Session lifetime in days (default: 30)
+    #[serde(default = "OidcConfig::default_session_lifetime")]
+    pub session_lifetime_days: u64,
+    
+    /// Optional override for redirect URI base URL.
+    /// If not set, auto-detected from request Host header.
+    pub redirect_uri_base: Option<String>,
+    
+    /// OIDC/OAuth2 providers
+    #[serde(default, rename = "provider")]
+    pub providers: Vec<OidcProviderConfig>,
+}
+
+impl OidcConfig {
+    fn default_session_lifetime() -> u64 {
+        30
+    }
+    
+    /// Resolve the cookie secret from env/file/literal
+    pub fn resolve_cookie_secret(&self) -> Result<String, ConfigError> {
+        resolve_secret(&self.cookie_secret)
+    }
+}
+
+/// Configuration for a single OIDC/OAuth2 provider
+#[derive(Debug, Clone, Deserialize)]
+pub struct OidcProviderConfig {
+    /// URL-safe identifier (used in routes like /auth/login/google)
+    pub name: String,
+    
+    /// Human-readable name shown on login page
+    pub display_name: String,
+    
+    // === Discovery mode (preferred for OIDC providers) ===
+    /// OIDC issuer URL - endpoints discovered automatically via .well-known/openid-configuration
+    pub issuer_url: Option<String>,
+    
+    // === Manual mode (fallback for OAuth2-only providers like GitHub) ===
+    /// Authorization endpoint URL
+    pub auth_url: Option<String>,
+    /// Token endpoint URL  
+    pub token_url: Option<String>,
+    /// UserInfo endpoint URL
+    pub userinfo_url: Option<String>,
+    
+    /// OAuth2 client ID
+    pub client_id: String,
+    
+    /// OAuth2 client secret.
+    /// Supports: env:VAR_NAME, file:/path, or literal value
+    pub client_secret: String,
+    
+    /// Field name for subject ID in userinfo response (default: "sub")
+    /// GitHub uses "id" instead of "sub"
+    #[serde(default = "OidcProviderConfig::default_sub_field")]
+    pub userinfo_sub_field: String,
+}
+
+impl OidcProviderConfig {
+    fn default_sub_field() -> String {
+        "sub".to_string()
+    }
+    
+    /// Check if this provider uses OIDC discovery mode
+    pub fn uses_discovery(&self) -> bool {
+        self.issuer_url.is_some()
+    }
+    
+    /// Check if this provider uses manual endpoint configuration
+    pub fn uses_manual_endpoints(&self) -> bool {
+        self.auth_url.is_some() || self.token_url.is_some() || self.userinfo_url.is_some()
+    }
+    
+    /// Validate the provider configuration
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let has_discovery = self.issuer_url.is_some();
+        let has_manual = self.auth_url.is_some() || self.token_url.is_some() || self.userinfo_url.is_some();
+        
+        if has_discovery && has_manual {
+            return Err(ConfigError::Validation(format!(
+                "Provider '{}': cannot specify both issuer_url and manual endpoints (auth_url/token_url/userinfo_url)",
+                self.name
+            )));
+        }
+        
+        if !has_discovery && !has_manual {
+            return Err(ConfigError::Validation(format!(
+                "Provider '{}': must specify either issuer_url (for OIDC discovery) or all manual endpoints (auth_url, token_url, userinfo_url)",
+                self.name
+            )));
+        }
+        
+        if has_manual {
+            if self.auth_url.is_none() {
+                return Err(ConfigError::Validation(format!(
+                    "Provider '{}': manual mode requires auth_url",
+                    self.name
+                )));
+            }
+            if self.token_url.is_none() {
+                return Err(ConfigError::Validation(format!(
+                    "Provider '{}': manual mode requires token_url",
+                    self.name
+                )));
+            }
+            if self.userinfo_url.is_none() {
+                return Err(ConfigError::Validation(format!(
+                    "Provider '{}': manual mode requires userinfo_url",
+                    self.name
+                )));
+            }
+        }
+        
+        // Validate name is URL-safe (alphanumeric, dash, underscore only)
+        if !self.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Err(ConfigError::Validation(format!(
+                "Provider '{}': name must contain only alphanumeric characters, dashes, and underscores",
+                self.name
+            )));
+        }
+        
+        Ok(())
+    }
+    
+    /// Resolve the client secret from env/file/literal
+    pub fn resolve_client_secret(&self) -> Result<String, ConfigError> {
+        resolve_secret(&self.client_secret)
+    }
 }

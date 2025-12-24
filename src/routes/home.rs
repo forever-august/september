@@ -13,7 +13,7 @@ use axum::{
 use tracing::instrument;
 
 use crate::error::{AppError, AppErrorResponse, ResultExt};
-use crate::middleware::RequestId;
+use crate::middleware::{CurrentUser, RequestId};
 use crate::nntp::GroupTreeNode;
 use crate::state::AppState;
 
@@ -53,10 +53,11 @@ async fn get_stats_for_groups(
 }
 
 /// Home page handler showing all newsgroups in a tree hierarchy.
-#[instrument(name = "home::index", skip(state, request_id))]
+#[instrument(name = "home::index", skip(state, request_id, current_user))]
 pub async fn index(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
+    Extension(current_user): Extension<CurrentUser>,
 ) -> Result<Html<String>, AppErrorResponse> {
     // Fetch all groups (cached + coalesced)
     let groups = state.nntp.get_groups().await.with_request_id(&request_id)?;
@@ -88,6 +89,14 @@ pub async fn index(
     context.insert("breadcrumbs", &Vec::<(&str, &str)>::new());
     context.insert("group_stats", &group_stats);
     context.insert("thread_counts", &thread_counts);
+    
+    // Auth context for header
+    context.insert("oidc_enabled", &state.oidc.is_some());
+    if let Some(user) = current_user.0.as_ref() {
+        context.insert("user", &serde_json::json!({
+            "display_name": user.display_name(),
+        }));
+    }
 
     let html = state
         .tera
@@ -98,10 +107,11 @@ pub async fn index(
 }
 
 /// Browse handler for navigating into group hierarchy by prefix path.
-#[instrument(name = "home::browse", skip(state, request_id), fields(prefix = %prefix))]
+#[instrument(name = "home::browse", skip(state, request_id, current_user), fields(prefix = %prefix))]
 pub async fn browse(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(prefix): Path<String>,
 ) -> Result<Html<String>, AppErrorResponse> {
     // Fetch all groups (cached + coalesced)
@@ -166,6 +176,14 @@ pub async fn browse(
     context.insert("current_node", &current_node);
     context.insert("group_stats", &group_stats);
     context.insert("thread_counts", &thread_counts);
+    
+    // Auth context for header
+    context.insert("oidc_enabled", &state.oidc.is_some());
+    if let Some(user) = current_user.0.as_ref() {
+        context.insert("user", &serde_json::json!({
+            "display_name": user.display_name(),
+        }));
+    }
 
     let html = state
         .tera

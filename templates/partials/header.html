@@ -1,5 +1,15 @@
 <header class="site-header">
     <div class="header-content">
         <a href="/" class="site-title">{{ config.site_name }}</a>
+        <div class="header-auth">
+            {% if user %}
+            <span class="user-name">{{ user.display_name }}</span>
+            <form action="/auth/logout" method="post" class="logout-form">
+                <button type="submit" class="auth-link">Logout</button>
+            </form>
+            {% elif oidc_enabled %}
+            <a href="/auth/login" class="auth-link">Login</a>
+            {% endif %}
+        </div>
     </div>
 </header>

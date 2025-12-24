@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tracing::instrument;
 
 use crate::error::{AppError, AppErrorResponse, ResultExt};
-use crate::middleware::RequestId;
+use crate::middleware::{CurrentUser, RequestId};
 use crate::state::AppState;
 
 /// Query parameters for thread list pagination.
@@ -23,12 +23,13 @@ pub struct ListParams {
 /// Handler for paginated thread list in a newsgroup.
 #[instrument(
     name = "threads::list",
-    skip(state, params, request_id),
+    skip(state, params, request_id, current_user),
     fields(group = %group)
 )]
 pub async fn list(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(group): Path<String>,
     Query(params): Query<ListParams>,
 ) -> Result<Html<String>, AppErrorResponse> {
@@ -55,6 +56,14 @@ pub async fn list(
     context.insert("group", &group);
     context.insert("threads", &threads);
     context.insert("pagination", &pagination);
+    
+    // Auth context for header
+    context.insert("oidc_enabled", &state.oidc.is_some());
+    if let Some(user) = current_user.0.as_ref() {
+        context.insert("user", &serde_json::json!({
+            "display_name": user.display_name(),
+        }));
+    }
 
     let html = state
         .tera
@@ -80,12 +89,13 @@ pub struct ViewParams {
 /// Handler for viewing a thread with paginated comments.
 #[instrument(
     name = "threads::view",
-    skip(state, params, request_id),
+    skip(state, params, request_id, current_user),
     fields(group = %path.group, message_id = %path.message_id)
 )]
 pub async fn view(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
+    Extension(current_user): Extension<CurrentUser>,
     Path(path): Path<ViewPath>,
     Query(params): Query<ViewParams>,
 ) -> Result<Html<String>, AppErrorResponse> {
@@ -107,6 +117,14 @@ pub async fn view(
     context.insert("thread", &thread);
     context.insert("comments", &comments);
     context.insert("pagination", &pagination);
+
+    // Auth context for header
+    context.insert("oidc_enabled", &state.oidc.is_some());
+    if let Some(user) = current_user.0.as_ref() {
+        context.insert("user", &serde_json::json!({
+            "display_name": user.display_name(),
+        }));
+    }
 
     let html = state
         .tera
