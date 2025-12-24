@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// Extension type for accessing request ID in handlers if needed.
 /// The inner Uuid can be extracted from request extensions when needed.
 #[derive(Clone, Debug)]
-pub struct RequestId(#[allow(dead_code)] pub Uuid);
+pub struct RequestId(pub Uuid);
 
 /// Middleware that generates a request ID and creates a request span.
 ///

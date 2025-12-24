@@ -1,13 +1,41 @@
 //! Message types for the NNTP worker pool
 //!
 //! These messages are sent from the NntpService to worker tasks via async_channel,
-//! with responses sent back via oneshot channels.
+//! with responses sent back via oneshot channels. Requests are prioritized to ensure
+//! user-facing operations (like fetching an article) are processed before background
+//! tasks (like refreshing group statistics).
+
+use std::fmt;
 
 use tokio::sync::oneshot;
 
 use nntp_rs::OverviewEntry;
 
 use super::{ArticleView, GroupView, ThreadView};
+
+/// Priority levels for NNTP operations.
+///
+/// Higher priority requests are processed before lower priority ones to ensure
+/// responsive user experience. Aging prevents starvation of low-priority requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Priority {
+    /// User-facing requests that block page rendering (GetArticle, GetThread)
+    High,
+    /// Page load requests, slightly less latency-sensitive (GetThreads, GetGroups)
+    Normal,
+    /// Background operations that can wait (GetGroupStats, GetNewArticles)
+    Low,
+}
+
+impl fmt::Display for Priority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Priority::High => write!(f, "high"),
+            Priority::Normal => write!(f, "normal"),
+            Priority::Low => write!(f, "low"),
+        }
+    }
+}
 
 /// Error type for NNTP operations that can be sent across channels
 #[derive(Debug, Clone)]
@@ -24,9 +52,6 @@ impl std::error::Error for NntpError {}
 /// Group statistics including last article date
 #[derive(Debug, Clone)]
 pub struct GroupStatsView {
-    /// Number of articles in the group (available for display/API use)
-    #[allow(dead_code)]
-    pub article_count: u64,
     /// Date of the last article (RFC 2822 format)
     pub last_article_date: Option<String>,
     /// Last article number (high water mark for incremental updates)
@@ -71,16 +96,17 @@ pub enum NntpRequest {
 }
 
 impl NntpRequest {
-    /// Get operation name for tracing spans (available for metrics/debugging)
-    #[allow(dead_code)]
-    pub fn operation_name(&self) -> &'static str {
+    /// Get the priority level for this request type.
+    ///
+    /// Priority is determined by how latency-sensitive the operation is:
+    /// - High: User clicked something and is waiting (GetArticle, GetThread)
+    /// - Normal: Page load operations (GetThreads, GetGroups)
+    /// - Low: Background refresh operations (GetGroupStats, GetNewArticles)
+    pub fn priority(&self) -> Priority {
         match self {
-            NntpRequest::GetGroups { .. } => "get_groups",
-            NntpRequest::GetThreads { .. } => "get_threads",
-            NntpRequest::GetThread { .. } => "get_thread",
-            NntpRequest::GetArticle { .. } => "get_article",
-            NntpRequest::GetGroupStats { .. } => "get_group_stats",
-            NntpRequest::GetNewArticles { .. } => "get_new_articles",
+            NntpRequest::GetArticle { .. } | NntpRequest::GetThread { .. } => Priority::High,
+            NntpRequest::GetThreads { .. } | NntpRequest::GetGroups { .. } => Priority::Normal,
+            NntpRequest::GetGroupStats { .. } | NntpRequest::GetNewArticles { .. } => Priority::Low,
         }
     }
 

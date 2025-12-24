@@ -1,7 +1,9 @@
-//! NNTP worker that processes requests from the queue
+//! NNTP worker that processes requests from priority queues
 //!
 //! Each worker maintains its own NNTP connection and processes requests
-//! from a shared async_channel queue.
+//! from shared priority queues. High-priority requests (user-facing) are
+//! processed before normal and low-priority requests. Aging prevents
+//! starvation of low-priority requests under sustained high load.
 //!
 //! Connection strategy:
 //! - Try TLS first for all connections
@@ -21,7 +23,8 @@ use tracing::{instrument, Span};
 
 use crate::config::{
     NntpServerConfig, NntpSettings, DEFAULT_SUBJECT, NNTP_MAX_ARTICLES_HEAD_FALLBACK,
-    NNTP_MAX_ARTICLES_PER_REQUEST, NNTP_MAX_ARTICLES_SINGLE_THREAD, NNTP_RECONNECT_DELAY_SECS,
+    NNTP_MAX_ARTICLES_PER_REQUEST, NNTP_MAX_ARTICLES_SINGLE_THREAD, NNTP_PRIORITY_AGING_SECS,
+    NNTP_RECONNECT_DELAY_SECS,
 };
 
 use super::messages::{GroupStatsView, NntpError, NntpRequest, NntpResponse};
@@ -139,29 +142,96 @@ impl ServerCapabilities {
     }
 }
 
-/// Worker that processes NNTP requests from a shared queue
+/// Worker that processes NNTP requests from priority queues
 pub struct NntpWorker {
     id: usize,
     server_name: String,
     server_config: NntpServerConfig,
     global_settings: NntpSettings,
-    requests: Receiver<NntpRequest>,
+    /// High-priority request queue (user-facing: GetArticle, GetThread)
+    high_rx: Receiver<NntpRequest>,
+    /// Normal-priority request queue (page load: GetThreads, GetGroups)
+    normal_rx: Receiver<NntpRequest>,
+    /// Low-priority request queue (background: GetGroupStats, GetNewArticles)
+    low_rx: Receiver<NntpRequest>,
 }
 
 impl NntpWorker {
-    /// Create a new worker
+    /// Create a new worker with priority queue receivers
     pub fn new(
         id: usize,
         server_config: NntpServerConfig,
         global_settings: NntpSettings,
-        requests: Receiver<NntpRequest>,
+        high_rx: Receiver<NntpRequest>,
+        normal_rx: Receiver<NntpRequest>,
+        low_rx: Receiver<NntpRequest>,
     ) -> Self {
         Self {
             id,
             server_name: server_config.name.clone(),
             server_config,
             global_settings,
-            requests,
+            high_rx,
+            normal_rx,
+            low_rx,
+        }
+    }
+
+    /// Receive the next request, respecting priority with aging to prevent starvation.
+    ///
+    /// Priority order: High > Normal > Low
+    /// Aging: If low-priority requests have been waiting longer than NNTP_PRIORITY_AGING_SECS,
+    /// process one low-priority request to prevent indefinite starvation.
+    async fn recv_prioritized(
+        &self,
+        last_low_process: &mut Instant,
+    ) -> Result<NntpRequest, async_channel::RecvError> {
+        loop {
+            // Check for aging: if low-priority queue is non-empty and hasn't been
+            // serviced recently, process one low-priority request
+            let should_check_aging =
+                last_low_process.elapsed().as_secs() >= NNTP_PRIORITY_AGING_SECS;
+
+            if should_check_aging {
+                if let Ok(req) = self.low_rx.try_recv() {
+                    *last_low_process = Instant::now();
+                    tracing::trace!(
+                        priority = "low",
+                        reason = "aging",
+                        "Processing aged low-priority request"
+                    );
+                    return Ok(req);
+                }
+            }
+
+            // Try high priority (non-blocking)
+            if let Ok(req) = self.high_rx.try_recv() {
+                return Ok(req);
+            }
+
+            // Try normal priority (non-blocking)
+            if let Ok(req) = self.normal_rx.try_recv() {
+                return Ok(req);
+            }
+
+            // Try low priority (non-blocking)
+            if let Ok(req) = self.low_rx.try_recv() {
+                *last_low_process = Instant::now();
+                return Ok(req);
+            }
+
+            // All queues empty - wait for any request using biased select
+            // to maintain priority order when multiple arrive simultaneously
+            tokio::select! {
+                biased;
+
+                result = self.high_rx.recv() => return result,
+                result = self.normal_rx.recv() => return result,
+                result = self.low_rx.recv() => {
+                    *last_low_process = Instant::now();
+                    return result;
+                }
+            }
         }
     }
 
@@ -278,15 +348,27 @@ impl NntpWorker {
                 "Thread fetch method selected"
             );
 
+            // Track when we last processed a low-priority request (for aging)
+            let mut last_low_process = Instant::now();
+
             // Process requests until connection fails or channel closes
             loop {
-                let request = match self.requests.recv().await {
+                let request = match self.recv_prioritized(&mut last_low_process).await {
                     Ok(req) => req,
                     Err(_) => {
-                        tracing::info!("Request channel closed, worker shutting down");
+                        tracing::info!("Request channels closed, worker shutting down");
                         return;
                     }
                 };
+
+                // Log queue depths at trace level for monitoring
+                tracing::trace!(
+                    high_depth = self.high_rx.len(),
+                    normal_depth = self.normal_rx.len(),
+                    low_depth = self.low_rx.len(),
+                    priority = %request.priority(),
+                    "Processing request"
+                );
 
                 let result = self.handle_request(&mut client, &request, &capabilities).await;
 
@@ -562,7 +644,6 @@ impl NntpWorker {
                 };
 
                 Ok(NntpResponse::GroupStats(GroupStatsView {
-                    article_count: stats.count,
                     last_article_date,
                     last_article_number: stats.last,
                 }))

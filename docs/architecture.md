@@ -55,7 +55,9 @@ The federated service wraps multiple `NntpService` instances (one per configured
 ```mermaid
 graph TB
     subgraph Service["NntpService"]
-        Queue[Request Queue]
+        HQ[High Priority Queue]
+        NQ[Normal Priority Queue]
+        LQ[Low Priority Queue]
         subgraph Workers["Worker Pool"]
             W1[Worker 1]
             W2[Worker 2]
@@ -75,16 +77,22 @@ graph TB
 
     NNTP[(NNTP Server)]
 
-    Queue --> W1
-    Queue --> W2
-    Queue --> WN
+    HQ --> W1
+    HQ --> W2
+    HQ --> WN
+    NQ --> W1
+    NQ --> W2
+    NQ --> WN
+    LQ --> W1
+    LQ --> W2
+    LQ --> WN
 
     C1 --> NNTP
     C2 --> NNTP
     CN --> NNTP
 ```
 
-Each `NntpService` manages a bounded request queue (`async_channel`). Workers pull requests from the shared queue and each maintains its own persistent NNTP connection. Worker implementation is in `src/nntp/worker.rs:141`.
+Each `NntpService` manages three priority queues (`async_channel`). Workers check queues in priority order (High → Normal → Low) with aging to prevent starvation. Each worker maintains its own persistent NNTP connection. Worker implementation is in `src/nntp/worker.rs:155`.
 
 ## Module Reference
 
@@ -126,9 +134,11 @@ A typical request flows through the system as follows:
 6. **NntpService**: The per-server `NntpService` handles request coalescing (`src/nntp/service.rs:34-43`):
    - Checks for in-flight requests for the same resource
    - Coalescing subscribers wait on a broadcast channel
-   - New requests are queued via `async_channel`
+   - New requests are routed to the appropriate priority queue (High/Normal/Low)
 
-7. **Worker Processing**: An `NntpWorker` pulls the request from the queue (`src/nntp/worker.rs:278`):
+7. **Worker Processing**: An `NntpWorker` pulls requests from priority queues (`src/nntp/worker.rs:361`):
+   - Checks High → Normal → Low priority queues in order
+   - Implements aging to prevent starvation of low-priority requests
    - Maintains persistent NNTP connection with auto-reconnect
    - Executes the NNTP protocol commands (OVER, HDR, ARTICLE, etc.)
    - Handles TLS negotiation and authentication
@@ -147,7 +157,9 @@ A typical request flows through the system as follows:
 
 **Request Coalescing**: Duplicate requests for the same resource are coalesced at both the service level (`src/nntp/service.rs:114-131`) and federated level (`src/nntp/federated.rs:686-720`), preventing thundering herd problems.
 
-**Worker Pool**: Each server has its own pool of workers with persistent connections. Workers pull from a shared `async_channel` queue, providing natural load balancing (`src/nntp/worker.rs:96-108`).
+**Priority Scheduling**: Requests are assigned priorities (High/Normal/Low) based on latency sensitivity. User-facing operations like article fetches are High priority, while background tasks like group stats are Low priority. Workers process higher-priority requests first, with aging to prevent starvation (`src/nntp/worker.rs:178-236`).
+
+**Worker Pool**: Each server has its own pool of workers with persistent connections. Workers check three priority queues in order, providing both load balancing and responsive scheduling (`src/nntp/worker.rs:155-170`).
 
 **Incremental Updates**: Thread caches store a high water mark (last article number). Cache hits trigger incremental fetches for new articles only (`src/nntp/federated.rs:262-314`).
 

@@ -38,8 +38,9 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph NntpService
-        TX[Request Queue<br/>async_channel::Sender]
-        RX[Request Queue<br/>async_channel::Receiver]
+        HQ[High Priority Queue]
+        NQ[Normal Priority Queue]
+        LQ[Low Priority Queue]
     end
     
     subgraph Workers
@@ -48,17 +49,44 @@ flowchart LR
         W3[Worker N<br/>NNTP Connection]
     end
     
-    TX --> RX
-    RX --> W1
-    RX --> W2
-    RX --> W3
+    HQ --> W1
+    NQ --> W1
+    LQ --> W1
+    HQ --> W2
+    NQ --> W2
+    LQ --> W2
+    HQ --> W3
+    NQ --> W3
+    LQ --> W3
     
     W1 --> NNTP[(NNTP Server)]
     W2 --> NNTP
     W3 --> NNTP
 ```
 
-Each `NntpService` creates a bounded `async_channel` queue (`src/nntp/service.rs:68`). Workers are spawned per-server and pull requests from the shared queue. Each worker maintains its own persistent NNTP connection.
+Each `NntpService` creates three bounded `async_channel` queues for priority-based scheduling (`src/nntp/service.rs:79-81`). Workers check queues in priority order (High → Normal → Low) and maintain persistent NNTP connections.
+
+## Request Priority
+
+Requests are prioritized to ensure user-facing operations are processed before background tasks:
+
+| Priority | Operations | Use Case |
+|----------|------------|----------|
+| **High** | `GetArticle`, `GetThread` | User clicked on content, blocking page render |
+| **Normal** | `GetThreads`, `GetGroups` | Page load operations |
+| **Low** | `GetGroupStats`, `GetNewArticles` | Background refresh, prefetch |
+
+Priority is determined by `NntpRequest::priority()` (`src/nntp/messages.rs:57-62`).
+
+### Starvation Prevention (Aging)
+
+To prevent low-priority requests from waiting indefinitely under sustained load, workers implement aging:
+
+- Each worker tracks when it last processed a low-priority request
+- If more than `NNTP_PRIORITY_AGING_SECS` (default: 10s) have passed, one low-priority request is processed
+- This ensures background tasks eventually complete even during high load
+
+Configuration constants are in `src/config.rs:122-133`.
 
 ## Caching Strategy
 
@@ -114,11 +142,12 @@ This is controlled via thread-local state (`src/nntp/tls.rs:19-22`) set by the w
 
 Request/response types are defined in `src/nntp/messages.rs`:
 
+- `Priority` enum: `High`, `Normal`, `Low` - determines scheduling order
 - `NntpRequest` enum: `GetArticle`, `GetThreads`, `GetThread`, `GetGroups`, `GetGroupStats`, `GetNewArticles`
 - `NntpResponse` enum: Corresponding response variants
 - `NntpError`: Wrapper for error messages that can be sent across channels
 
-Responses are returned via `oneshot::Sender` channels embedded in each request variant.
+Each request type has an associated priority via `NntpRequest::priority()`. Responses are returned via `oneshot::Sender` channels embedded in each request variant.
 
 ## Server Capability Detection
 

@@ -2,7 +2,8 @@
 //!
 //! Provides communication with a single NNTP server through a worker pool.
 //! Request coalescing prevents duplicate requests for the same resource.
-//! Caching is handled at the federated service level.
+//! Requests are prioritized to ensure user-facing operations are processed
+//! before background tasks. Caching is handled at the federated service level.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,9 +15,13 @@ use tracing::instrument;
 
 use nntp_rs::OverviewEntry;
 
-use crate::config::{NntpServerConfig, NntpSettings, BROADCAST_CHANNEL_CAPACITY, NNTP_REQUEST_QUEUE_CAPACITY};
+use crate::config::{
+    NntpServerConfig, NntpSettings, BROADCAST_CHANNEL_CAPACITY,
+    NNTP_HIGH_PRIORITY_QUEUE_CAPACITY, NNTP_LOW_PRIORITY_QUEUE_CAPACITY,
+    NNTP_NORMAL_PRIORITY_QUEUE_CAPACITY,
+};
 
-use super::messages::{GroupStatsView, NntpError, NntpRequest};
+use super::messages::{GroupStatsView, NntpError, NntpRequest, Priority};
 use super::worker::NntpWorker;
 use super::{ArticleView, GroupView, ThreadView};
 
@@ -43,15 +48,20 @@ struct PendingRequests {
     group_stats: Mutex<HashMap<String, PendingEntry<GroupStatsView>>>,
 }
 
-/// NNTP Service for a single server with request coalescing
+/// NNTP Service for a single server with request coalescing and priority queues
 #[derive(Clone)]
 pub struct NntpService {
     /// Server name for logging
     name: String,
-    /// Request queue sender - workers pull from the receiver
-    request_tx: Sender<NntpRequest>,
-    /// Request queue receiver - cloned for each worker
-    request_rx: Receiver<NntpRequest>,
+    /// High-priority request queue (user-facing: GetArticle, GetThread)
+    high_tx: Sender<NntpRequest>,
+    high_rx: Receiver<NntpRequest>,
+    /// Normal-priority request queue (page load: GetThreads, GetGroups)
+    normal_tx: Sender<NntpRequest>,
+    normal_rx: Receiver<NntpRequest>,
+    /// Low-priority request queue (background: GetGroupStats, GetNewArticles)
+    low_tx: Sender<NntpRequest>,
+    low_rx: Receiver<NntpRequest>,
     /// Server configuration
     server_config: Arc<NntpServerConfig>,
     /// Global NNTP settings
@@ -65,17 +75,22 @@ pub struct NntpService {
 impl NntpService {
     /// Create a new NNTP service for a single server
     pub fn new(server_config: NntpServerConfig, global_settings: NntpSettings) -> Self {
-        // Create the request channel with backpressure
-        let (tx, rx) = async_channel::bounded(NNTP_REQUEST_QUEUE_CAPACITY);
+        // Create priority request channels with backpressure
+        let (high_tx, high_rx) = async_channel::bounded(NNTP_HIGH_PRIORITY_QUEUE_CAPACITY);
+        let (normal_tx, normal_rx) = async_channel::bounded(NNTP_NORMAL_PRIORITY_QUEUE_CAPACITY);
+        let (low_tx, low_rx) = async_channel::bounded(NNTP_LOW_PRIORITY_QUEUE_CAPACITY);
 
-        let request_timeout = Duration::from_secs(
-            server_config.request_timeout_seconds(&global_settings)
-        );
+        let request_timeout =
+            Duration::from_secs(server_config.request_timeout_seconds(&global_settings));
 
         Self {
             name: server_config.name.clone(),
-            request_tx: tx,
-            request_rx: rx,
+            high_tx,
+            high_rx,
+            normal_tx,
+            normal_rx,
+            low_tx,
+            low_rx,
             server_config: Arc::new(server_config),
             global_settings: Arc::new(global_settings),
             request_timeout,
@@ -94,6 +109,17 @@ impl NntpService {
         &self.name
     }
 
+    /// Send a request to the appropriate priority queue
+    async fn send_request(&self, request: NntpRequest) -> Result<(), NntpError> {
+        let priority = request.priority();
+        let result = match priority {
+            Priority::High => self.high_tx.send(request).await,
+            Priority::Normal => self.normal_tx.send(request).await,
+            Priority::Low => self.low_tx.send(request).await,
+        };
+        result.map_err(|_| NntpError("Worker pool closed".into()))
+    }
+
     /// Spawn worker tasks for this server
     pub fn spawn_workers(&self) {
         let count = self.server_config.worker_count();
@@ -102,7 +128,9 @@ impl NntpService {
                 id,
                 (*self.server_config).clone(),
                 (*self.global_settings).clone(),
-                self.request_rx.clone(),
+                self.high_rx.clone(),
+                self.normal_rx.clone(),
+                self.low_rx.clone(),
             );
             tokio::spawn(worker.run());
         }
@@ -143,13 +171,11 @@ impl NntpService {
         drop(pending);
 
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.request_tx
-            .send(NntpRequest::GetArticle {
-                message_id: message_id.to_string(),
-                response: resp_tx,
-            })
-            .await
-            .map_err(|_| NntpError("Worker pool closed".into()))?;
+        self.send_request(NntpRequest::GetArticle {
+            message_id: message_id.to_string(),
+            response: resp_tx,
+        })
+        .await?;
 
         // Wait for result with timeout
         let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
@@ -202,14 +228,12 @@ impl NntpService {
         drop(pending);
 
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.request_tx
-            .send(NntpRequest::GetThreads {
-                group: group.to_string(),
-                count,
-                response: resp_tx,
-            })
-            .await
-            .map_err(|_| NntpError("Worker pool closed".into()))?;
+        self.send_request(NntpRequest::GetThreads {
+            group: group.to_string(),
+            count,
+            response: resp_tx,
+        })
+        .await?;
 
         // Wait for result with timeout
         let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
@@ -261,14 +285,12 @@ impl NntpService {
         drop(pending);
 
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.request_tx
-            .send(NntpRequest::GetThread {
-                group: group.to_string(),
-                message_id: message_id.to_string(),
-                response: resp_tx,
-            })
-            .await
-            .map_err(|_| NntpError("Worker pool closed".into()))?;
+        self.send_request(NntpRequest::GetThread {
+            group: group.to_string(),
+            message_id: message_id.to_string(),
+            response: resp_tx,
+        })
+        .await?;
 
         // Wait for result with timeout
         let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
@@ -318,10 +340,8 @@ impl NntpService {
         drop(pending);
 
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.request_tx
-            .send(NntpRequest::GetGroups { response: resp_tx })
-            .await
-            .map_err(|_| NntpError("Worker pool closed".into()))?;
+        self.send_request(NntpRequest::GetGroups { response: resp_tx })
+            .await?;
 
         // Wait for result with timeout
         let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
@@ -371,13 +391,11 @@ impl NntpService {
         drop(pending);
 
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.request_tx
-            .send(NntpRequest::GetGroupStats {
-                group: group.to_string(),
-                response: resp_tx,
-            })
-            .await
-            .map_err(|_| NntpError("Worker pool closed".into()))?;
+        self.send_request(NntpRequest::GetGroupStats {
+            group: group.to_string(),
+            response: resp_tx,
+        })
+        .await?;
 
         // Wait for result with timeout
         let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
@@ -409,14 +427,12 @@ impl NntpService {
     ) -> Result<Vec<OverviewEntry>, NntpError> {
         let start = Instant::now();
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.request_tx
-            .send(NntpRequest::GetNewArticles {
-                group: group.to_string(),
-                since_article_number,
-                response: resp_tx,
-            })
-            .await
-            .map_err(|_| NntpError("Worker pool closed".into()))?;
+        self.send_request(NntpRequest::GetNewArticles {
+            group: group.to_string(),
+            since_article_number,
+            response: resp_tx,
+        })
+        .await?;
 
         // Wait for result with timeout
         match tokio::time::timeout(self.request_timeout, resp_rx).await {

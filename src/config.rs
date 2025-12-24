@@ -116,8 +116,18 @@ pub const PAGINATION_WINDOW: usize = 2;
 // NNTP Channel and Queue Constants
 // =============================================================================
 
-/// Capacity of the request queue (backpressure limit)
-pub const NNTP_REQUEST_QUEUE_CAPACITY: usize = 100;
+/// Capacity of the high-priority request queue (user-facing operations)
+pub const NNTP_HIGH_PRIORITY_QUEUE_CAPACITY: usize = 50;
+
+/// Capacity of the normal-priority request queue (page load operations)
+pub const NNTP_NORMAL_PRIORITY_QUEUE_CAPACITY: usize = 50;
+
+/// Capacity of the low-priority request queue (background operations)
+pub const NNTP_LOW_PRIORITY_QUEUE_CAPACITY: usize = 100;
+
+/// Aging threshold in seconds: process low-priority requests after this duration
+/// of starvation to prevent indefinite delays under sustained high load
+pub const NNTP_PRIORITY_AGING_SECS: u64 = 10;
 
 /// Capacity of broadcast channels for request coalescing
 pub const BROADCAST_CHANNEL_CAPACITY: usize = 16;

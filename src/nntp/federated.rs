@@ -321,20 +321,31 @@ impl NntpFederatedService {
             let service = &self.services[idx];
             match service.get_threads(group, max_articles).await {
                 Ok(threads) => {
-                    // Get the high water mark from group stats
-                    let last_article_number = self.get_last_article_number(group).await
-                        .unwrap_or(0);
+                    // Get the high water mark from cached group stats (non-blocking).
+                    // If not cached, use 0 and trigger async prefetch.
+                    // This prevents blocking thread display on low-priority stats fetch.
+                    let last_article_number = self
+                        .get_last_article_number_cached(group)
+                        .await
+                        .unwrap_or_else(|| {
+                            // Trigger async prefetch so next request has the HWM
+                            self.prefetch_group_stats_if_needed(group);
+                            0
+                        });
 
                     // Cache with high water mark
-                    self.threads_cache.insert(
-                        cache_key,
-                        CachedThreads {
-                            threads: threads.clone(),
-                            last_article_number,
-                        },
-                    ).await;
+                    self.threads_cache
+                        .insert(
+                            cache_key,
+                            CachedThreads {
+                                threads: threads.clone(),
+                                last_article_number,
+                            },
+                        )
+                        .await;
 
-                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+                    tracing::Span::current()
+                        .record("duration_ms", start.elapsed().as_millis() as u64);
                     return Ok(threads);
                 }
                 Err(e) => {
@@ -390,19 +401,27 @@ impl NntpFederatedService {
             .unwrap_or_else(|| AppError::Internal("Failed to fetch new articles".into())))
     }
 
-    /// Get the last article number for a group (from group stats)
-    async fn get_last_article_number(&self, group: &str) -> Option<u64> {
-        // Get servers for this group
-        let server_indices = self.get_servers_for_group(group).await;
-
-        for idx in server_indices {
-            let service = &self.services[idx];
-            if let Ok(stats) = service.get_group_stats(group).await {
-                return Some(stats.last_article_number);
-            }
+    /// Get the last article number for a group (from cached group stats only).
+    /// Returns None if stats are not cached. Does NOT fetch from server to avoid
+    /// blocking high-priority operations on low-priority group stats requests.
+    async fn get_last_article_number_cached(&self, group: &str) -> Option<u64> {
+        if let Some(stats) = self.group_stats_cache.get(group).await {
+            return Some(stats.last_article_number);
         }
-
         None
+    }
+
+    /// Trigger async prefetch of group stats if not cached.
+    /// Used to populate the high water mark for incremental updates.
+    fn prefetch_group_stats_if_needed(&self, group: &str) {
+        let group = group.to_string();
+        let this = self.clone();
+        tokio::spawn(async move {
+            // Check cache first to avoid unnecessary work
+            if this.group_stats_cache.get(&group).await.is_none() {
+                let _ = this.get_group_stats(&group).await;
+            }
+        });
     }
 
     /// Fetch paginated threads from a newsgroup.
