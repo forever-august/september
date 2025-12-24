@@ -26,12 +26,12 @@ pub const HTTP_CACHE_HOME_MAX_AGE: u32 = 60;
 pub const HTTP_CACHE_HOME_SWR: u32 = 30;
 
 /// Thread list - new threads appear regularly
-pub const HTTP_CACHE_THREAD_LIST_MAX_AGE: u32 = 30;
-pub const HTTP_CACHE_THREAD_LIST_SWR: u32 = 30;
+pub const HTTP_CACHE_THREAD_LIST_MAX_AGE: u32 = 2;
+pub const HTTP_CACHE_THREAD_LIST_SWR: u32 = 5;
 
 /// Thread view - may receive new replies
-pub const HTTP_CACHE_THREAD_VIEW_MAX_AGE: u32 = 120;
-pub const HTTP_CACHE_THREAD_VIEW_SWR: u32 = 60;
+pub const HTTP_CACHE_THREAD_VIEW_MAX_AGE: u32 = 2;
+pub const HTTP_CACHE_THREAD_VIEW_SWR: u32 = 5;
 
 /// Individual articles - immutable content
 pub const HTTP_CACHE_ARTICLE_MAX_AGE: u32 = 3600;
@@ -160,6 +160,33 @@ pub const THREAD_CACHE_MULTIPLIER: u64 = 10;
 
 /// Divisor for negative cache size (relative to article cache)
 pub const NEGATIVE_CACHE_SIZE_DIVISOR: u64 = 4;
+
+// =============================================================================
+// Incremental Update Constants
+// =============================================================================
+
+/// Debounce interval for incremental update checks (milliseconds)
+/// Prevents checking for new articles more than once per second per group
+pub const INCREMENTAL_DEBOUNCE_MS: u64 = 1000;
+
+/// Minimum background refresh period for very active groups (seconds)
+/// At 10,000 requests/second, refresh every 1 second
+pub const BACKGROUND_REFRESH_MIN_PERIOD_SECS: u64 = 1;
+
+/// Maximum background refresh period for barely active groups (seconds)  
+/// Any activity at all = refresh every 30 seconds
+pub const BACKGROUND_REFRESH_MAX_PERIOD_SECS: u64 = 30;
+
+/// Moving average window for request rate calculation (seconds)
+pub const ACTIVITY_WINDOW_SECS: u64 = 300; // 5 minutes
+
+/// Number of buckets for activity tracking within the window
+/// Bucket granularity = ACTIVITY_WINDOW_SECS / ACTIVITY_BUCKET_COUNT
+/// e.g., 300s / 150 buckets = 2 seconds per bucket
+pub const ACTIVITY_BUCKET_COUNT: u64 = 150;
+
+/// High request rate threshold (requests/second) for minimum refresh period
+pub const ACTIVITY_HIGH_RPS: f64 = 10000.0;
 
 // =============================================================================
 // Default Paths and Strings
@@ -380,7 +407,7 @@ impl CacheConfig {
         86400 // 24 hours
     }
     fn default_threads_ttl() -> u64 {
-        300 // 5 minutes
+        1800 // 30 minutes
     }
     fn default_groups_ttl() -> u64 {
         3600 // 1 hour

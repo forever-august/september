@@ -17,7 +17,9 @@ use tracing::instrument;
 
 use crate::config::{
     AppConfig, CacheConfig, BROADCAST_CHANNEL_CAPACITY, NEGATIVE_CACHE_SIZE_DIVISOR,
-    NNTP_NEGATIVE_CACHE_TTL_SECS, THREAD_CACHE_MULTIPLIER,
+    NNTP_NEGATIVE_CACHE_TTL_SECS, THREAD_CACHE_MULTIPLIER, INCREMENTAL_DEBOUNCE_MS,
+    BACKGROUND_REFRESH_MIN_PERIOD_SECS, BACKGROUND_REFRESH_MAX_PERIOD_SECS,
+    ACTIVITY_WINDOW_SECS, ACTIVITY_BUCKET_COUNT, ACTIVITY_HIGH_RPS,
 };
 use crate::error::AppError;
 
@@ -25,10 +27,170 @@ use nntp_rs::OverviewEntry;
 
 use super::messages::GroupStatsView;
 use super::service::NntpService;
-use super::{merge_articles_into_threads, ArticleView, FlatComment, GroupView, PaginationInfo, ThreadView};
+use super::{merge_articles_into_thread, merge_articles_into_threads, ArticleView, FlatComment, GroupView, PaginationInfo, ThreadView};
 
 /// Type alias for pending group stats broadcast senders
 type PendingGroupStats = HashMap<String, broadcast::Sender<Result<GroupStatsView, String>>>;
+
+/// Type alias for pending incremental update broadcast senders
+type PendingIncremental = HashMap<String, broadcast::Sender<Result<Arc<Vec<OverviewEntry>>, String>>>;
+
+/// Tracks request activity for a single group using a circular buffer of time buckets.
+/// Enables calculation of a 5-minute moving average request rate.
+struct GroupActivity {
+    /// Circular buffer of request counts
+    buckets: Vec<u32>,
+    /// Index of the current bucket
+    current_bucket: usize,
+    /// Bucket index corresponding to bucket_start_secs (for tracking time progression)
+    bucket_start_idx: u64,
+    /// Total requests in all buckets (for fast average calculation)
+    total_requests: u64,
+    /// Handle to the group's refresh task (for cancellation on activity change)
+    refresh_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Seconds per bucket = window size / bucket count
+const BUCKET_GRANULARITY_SECS: u64 = ACTIVITY_WINDOW_SECS / ACTIVITY_BUCKET_COUNT;
+
+impl GroupActivity {
+    fn new() -> Self {
+        Self {
+            buckets: vec![0; ACTIVITY_BUCKET_COUNT as usize],
+            current_bucket: 0,
+            bucket_start_idx: 0,
+            total_requests: 0,
+            refresh_task: None,
+        }
+    }
+
+    /// Convert seconds to bucket index
+    fn secs_to_bucket_idx(secs: u64) -> u64 {
+        secs / BUCKET_GRANULARITY_SECS
+    }
+
+    /// Record a request, advancing buckets if necessary.
+    /// `now_secs` is seconds since an arbitrary epoch (we use Instant-based).
+    fn record_request(&mut self, now_secs: u64) {
+        self.advance_to(now_secs);
+        self.buckets[self.current_bucket] = self.buckets[self.current_bucket].saturating_add(1);
+        self.total_requests += 1;
+    }
+
+    /// Advance the bucket pointer to the given time, clearing old buckets.
+    fn advance_to(&mut self, now_secs: u64) {
+        let now_idx = Self::secs_to_bucket_idx(now_secs);
+        
+        if self.bucket_start_idx == 0 && self.total_requests == 0 {
+            // First request - initialize
+            self.bucket_start_idx = now_idx;
+            return;
+        }
+
+        let elapsed_buckets = now_idx.saturating_sub(self.bucket_start_idx);
+        if elapsed_buckets == 0 {
+            return; // Still in the same bucket
+        }
+
+        // Clear buckets for elapsed time periods
+        let buckets_to_clear = elapsed_buckets.min(ACTIVITY_BUCKET_COUNT) as usize;
+        for i in 1..=buckets_to_clear {
+            let idx = (self.current_bucket + i) % ACTIVITY_BUCKET_COUNT as usize;
+            self.total_requests = self.total_requests.saturating_sub(self.buckets[idx] as u64);
+            self.buckets[idx] = 0;
+        }
+
+        // Move to the new bucket
+        self.current_bucket = (self.current_bucket + (elapsed_buckets as usize)) % ACTIVITY_BUCKET_COUNT as usize;
+        self.bucket_start_idx = now_idx;
+    }
+
+    /// Calculate requests per second (5-minute moving average).
+    fn requests_per_second(&mut self, now_secs: u64) -> f64 {
+        self.advance_to(now_secs);
+        self.total_requests as f64 / ACTIVITY_WINDOW_SECS as f64
+    }
+
+    /// Check if the group is inactive (no requests in the window).
+    fn is_inactive(&mut self, now_secs: u64) -> bool {
+        self.advance_to(now_secs);
+        self.total_requests == 0
+    }
+}
+
+/// Tracks activity for all groups
+#[derive(Default)]
+struct ActivityTracker {
+    groups: HashMap<String, GroupActivity>,
+    /// Epoch for calculating seconds (set on first use)
+    epoch: Option<Instant>,
+}
+
+impl ActivityTracker {
+    fn new() -> Self {
+        Self {
+            groups: HashMap::new(),
+            epoch: None,
+        }
+    }
+
+    /// Get seconds since our epoch
+    fn now_secs(&mut self) -> u64 {
+        let now = Instant::now();
+        match self.epoch {
+            Some(epoch) => now.duration_since(epoch).as_secs(),
+            None => {
+                self.epoch = Some(now);
+                0
+            }
+        }
+    }
+
+    /// Record a request for a group
+    fn record_request(&mut self, group: &str) {
+        let now_secs = self.now_secs();
+        self.groups
+            .entry(group.to_string())
+            .or_insert_with(GroupActivity::new)
+            .record_request(now_secs);
+    }
+
+    /// Get the requests per second for a group
+    fn requests_per_second(&mut self, group: &str) -> f64 {
+        let now_secs = self.now_secs();
+        self.groups
+            .get_mut(group)
+            .map(|a| a.requests_per_second(now_secs))
+            .unwrap_or(0.0)
+    }
+
+    /// Get all active groups (with any activity in the window)
+    fn active_groups(&mut self) -> Vec<String> {
+        let now_secs = self.now_secs();
+        self.groups.retain(|_, activity| !activity.is_inactive(now_secs));
+        self.groups.keys().cloned().collect()
+    }
+
+    /// Set the refresh task handle for a group
+    fn set_refresh_task(&mut self, group: &str, task: tokio::task::JoinHandle<()>) {
+        if let Some(activity) = self.groups.get_mut(group) {
+            // Cancel existing task if any
+            if let Some(old_task) = activity.refresh_task.take() {
+                old_task.abort();
+            }
+            activity.refresh_task = Some(task);
+        }
+    }
+
+    /// Check if a group has a running refresh task
+    fn has_refresh_task(&self, group: &str) -> bool {
+        self.groups
+            .get(group)
+            .and_then(|a| a.refresh_task.as_ref())
+            .map(|t| !t.is_finished())
+            .unwrap_or(false)
+    }
+}
 
 /// Cached thread data with high water mark for incremental updates
 #[derive(Clone)]
@@ -36,6 +198,15 @@ struct CachedThreads {
     threads: Vec<ThreadView>,
     /// Last article number when this cache was populated (high water mark)
     last_article_number: u64,
+}
+
+/// Cached single thread data with group info for incremental updates
+#[derive(Clone)]
+struct CachedThread {
+    thread: ThreadView,
+    /// Group name for incremental update queries (stored for potential future use)
+    #[allow(dead_code)]
+    group: String,
 }
 
 /// Federated NNTP Service that presents multiple servers as one unified source
@@ -52,7 +223,7 @@ pub struct NntpFederatedService {
     /// Stores threads with high water mark for incremental updates
     threads_cache: Cache<String, CachedThreads>,
     /// Cache for single threads (key: "group:message_id")
-    thread_cache: Cache<String, ThreadView>,
+    thread_cache: Cache<String, CachedThread>,
     /// Cache for group list (merged from all servers)
     groups_cache: Cache<String, Vec<GroupView>>,
     /// Cache for group stats (article count and last article date)
@@ -64,6 +235,18 @@ pub struct NntpFederatedService {
 
     /// Pending group stats requests for coalescing at federated level
     pending_group_stats: Arc<RwLock<PendingGroupStats>>,
+
+    /// Per-group high water mark (last known article number)
+    group_hwm: Arc<RwLock<HashMap<String, u64>>>,
+
+    /// Last incremental check time per group (for debouncing)
+    last_incremental_check: Arc<RwLock<HashMap<String, Instant>>>,
+
+    /// Pending incremental update requests for coalescing (key: group name)
+    pending_incremental: Arc<RwLock<PendingIncremental>>,
+
+    /// Activity tracker for background refresh scheduling
+    activity_tracker: Arc<RwLock<ActivityTracker>>,
 
     /// Maximum number of articles to fetch per group (from config)
     max_articles_per_group: u64,
@@ -135,6 +318,10 @@ impl NntpFederatedService {
             group_stats_cache,
             group_servers: Arc::new(RwLock::new(HashMap::new())),
             pending_group_stats: Arc::new(RwLock::new(HashMap::new())),
+            group_hwm: Arc::new(RwLock::new(HashMap::new())),
+            last_incremental_check: Arc::new(RwLock::new(HashMap::new())),
+            pending_incremental: Arc::new(RwLock::new(HashMap::new())),
+            activity_tracker: Arc::new(RwLock::new(ActivityTracker::new())),
             max_articles_per_group,
         }
     }
@@ -181,6 +368,286 @@ impl NntpFederatedService {
             || error_msg.contains("423")
             || error_msg.contains("no such article")
             || error_msg.contains("article not found")
+    }
+
+    // =========================================================================
+    // Incremental Update Helpers
+    // =========================================================================
+
+    /// Check if we should perform an incremental update check for a group.
+    /// Returns true if the debounce period has elapsed, and updates the timestamp.
+    /// This ensures at most one NNTP check per second per group.
+    async fn should_check_incremental(&self, group: &str) -> bool {
+        let now = Instant::now();
+        let debounce_duration = Duration::from_millis(INCREMENTAL_DEBOUNCE_MS);
+
+        let mut last_check = self.last_incremental_check.write().await;
+        
+        if let Some(last) = last_check.get(group) {
+            if now.duration_since(*last) < debounce_duration {
+                tracing::trace!(%group, "Incremental check debounced");
+                return false;
+            }
+        }
+        
+        last_check.insert(group.to_string(), now);
+        true
+    }
+
+    /// Mark a group as active (for background refresh tracking).
+    /// Called when users view thread listings or threads in a group.
+    /// Also records the request for activity-proportional refresh rate calculation.
+    async fn mark_group_active(&self, group: &str) {
+        let mut tracker = self.activity_tracker.write().await;
+        tracker.record_request(group);
+        
+        // Check if we need to spawn/update a refresh task for this group
+        if !tracker.has_refresh_task(group) {
+            drop(tracker); // Release lock before spawning
+            self.spawn_group_refresh_task(group.to_string()).await;
+        }
+    }
+
+    /// Get the current high water mark for a group, or 0 if unknown.
+    async fn get_group_hwm(&self, group: &str) -> u64 {
+        self.group_hwm.read().await.get(group).copied().unwrap_or(0)
+    }
+
+    /// Update the high water mark for a group (takes the max of current and new).
+    async fn update_group_hwm(&self, group: &str, new_hwm: u64) {
+        let mut hwm = self.group_hwm.write().await;
+        let current = hwm.get(group).copied().unwrap_or(0);
+        if new_hwm > current {
+            hwm.insert(group.to_string(), new_hwm);
+        }
+    }
+
+    /// Fetch new articles for a group with request coalescing.
+    /// Multiple concurrent requests for the same group will share a single NNTP request.
+    #[instrument(
+        name = "nntp.federated.get_new_articles_coalesced",
+        skip(self),
+        fields(group = %group, coalesced = false, debounced = false, new_count, duration_ms)
+    )]
+    async fn get_new_articles_coalesced(
+        &self,
+        group: &str,
+    ) -> Result<Vec<OverviewEntry>, AppError> {
+        let start = Instant::now();
+
+        // Check debounce first
+        if !self.should_check_incremental(group).await {
+            tracing::Span::current().record("debounced", true);
+            tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+            return Ok(Vec::new());
+        }
+
+        // Get current HWM for this group
+        let hwm = self.get_group_hwm(group).await;
+        if hwm == 0 {
+            // No HWM yet - trigger stats fetch and return empty
+            // This happens on first access before any full fetch
+            self.prefetch_group_stats_if_needed(group);
+            tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+            return Ok(Vec::new());
+        }
+
+        // Check for pending request (coalesce if one is already in flight)
+        {
+            let pending = self.pending_incremental.read().await;
+            if let Some(tx) = pending.get(group) {
+                let mut rx = tx.subscribe();
+                drop(pending); // Release lock while waiting
+
+                tracing::Span::current().record("coalesced", true);
+                let result = match rx.recv().await {
+                    Ok(Ok(entries)) => Ok((*entries).clone()),
+                    Ok(Err(e)) => Err(AppError::Internal(e)),
+                    Err(_) => Err(AppError::Internal("Broadcast channel closed".into())),
+                };
+                tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+                return result;
+            }
+        }
+
+        // Register pending request
+        let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
+        {
+            let mut pending = self.pending_incremental.write().await;
+            // Double-check after acquiring write lock
+            if let Some(existing_tx) = pending.get(group) {
+                let mut rx = existing_tx.subscribe();
+                drop(pending);
+                tracing::Span::current().record("coalesced", true);
+                let result = match rx.recv().await {
+                    Ok(Ok(entries)) => Ok((*entries).clone()),
+                    Ok(Err(e)) => Err(AppError::Internal(e)),
+                    Err(_) => Err(AppError::Internal("Broadcast channel closed".into())),
+                };
+                tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+                return result;
+            }
+            pending.insert(group.to_string(), tx.clone());
+        }
+
+        // Perform the actual fetch
+        let result = self.get_new_articles(group, hwm).await;
+
+        // Update HWM on success
+        if let Ok(ref entries) = result {
+            if let Some(max_num) = entries.iter().filter_map(|e| e.number()).max() {
+                self.update_group_hwm(group, max_num).await;
+            }
+            tracing::Span::current().record("new_count", entries.len());
+        }
+
+        // Broadcast result to waiters and cleanup
+        {
+            let mut pending = self.pending_incremental.write().await;
+            pending.remove(group);
+        }
+
+        let broadcast_result = result
+            .as_ref()
+            .map(|v| Arc::new(v.clone()))
+            .map_err(|e| e.to_string());
+        let _ = tx.send(broadcast_result);
+
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+        result
+    }
+
+    /// Get list of currently active groups (with any activity in the window).
+    /// Also cleans up stale entries.
+    #[allow(dead_code)] // Useful for debugging/monitoring
+    pub async fn get_active_groups(&self) -> Vec<String> {
+        self.activity_tracker.write().await.active_groups()
+    }
+
+    /// Calculate refresh period based on request rate using log10 scale.
+    /// - 10,000 requests/second -> 1 second refresh period
+    /// - Any activity at all -> 30 second refresh period  
+    /// - Scales logarithmically between these extremes
+    fn calculate_refresh_period(requests_per_second: f64) -> Duration {
+        if requests_per_second <= 0.0 {
+            return Duration::from_secs(BACKGROUND_REFRESH_MAX_PERIOD_SECS);
+        }
+
+        // log10(10000) = 4 -> 1s
+        // log10(1/300) ≈ -2.48 -> 30s (minimum activity = 1 request in 5 minutes)
+        // We use the formula: period = max - (max - min) * (log10(rps) - log_min) / (log_max - log_min)
+        
+        let log_rps = requests_per_second.log10();
+        let log_min = (1.0 / ACTIVITY_WINDOW_SECS as f64).log10(); // ~-2.48 for 300s window
+        let log_max = ACTIVITY_HIGH_RPS.log10(); // 4.0 for 10k rps
+        
+        // Clamp to range
+        let log_clamped = log_rps.clamp(log_min, log_max);
+        
+        // Linear interpolation in log space
+        let ratio = (log_clamped - log_min) / (log_max - log_min);
+        let period_secs = BACKGROUND_REFRESH_MAX_PERIOD_SECS as f64 
+            - ratio * (BACKGROUND_REFRESH_MAX_PERIOD_SECS - BACKGROUND_REFRESH_MIN_PERIOD_SECS) as f64;
+        
+        Duration::from_secs_f64(period_secs.max(BACKGROUND_REFRESH_MIN_PERIOD_SECS as f64))
+    }
+
+    /// Spawn a per-group refresh task that runs at an activity-proportional rate.
+    async fn spawn_group_refresh_task(&self, group: String) {
+        let this = self.clone();
+        let group_clone = group.clone();
+        
+        tracing::debug!(group = %group, "Spawning background refresh task");
+        
+        let task = tokio::spawn(async move {
+            loop {
+                // Get current request rate and calculate refresh period
+                let rps = {
+                    let mut tracker = this.activity_tracker.write().await;
+                    tracker.requests_per_second(&group_clone)
+                };
+                
+                let period = Self::calculate_refresh_period(rps);
+                
+                tracing::debug!(
+                    group = %group_clone,
+                    rps = %format!("{:.2}", rps),
+                    period_secs = %period.as_secs_f64(),
+                    "Group refresh scheduled"
+                );
+                
+                tokio::time::sleep(period).await;
+                
+                // Check if group is still active before refreshing
+                let still_active = {
+                    let mut tracker = this.activity_tracker.write().await;
+                    let active = tracker.active_groups();
+                    active.contains(&group_clone)
+                };
+                
+                if !still_active {
+                    tracing::debug!(group = %group_clone, "Group inactive, stopping refresh task");
+                    break;
+                }
+                
+                // Perform the refresh
+                this.trigger_incremental_update(&group_clone).await;
+            }
+        });
+        
+        // Store the task handle
+        self.activity_tracker.write().await.set_refresh_task(&group, task);
+    }
+
+    /// Trigger an incremental update for a group (used by background refresh).
+    /// Updates the threads cache if new articles are found.
+    pub async fn trigger_incremental_update(&self, group: &str) {
+        let span = tracing::info_span!("background.group_refresh", %group);
+        let _guard = span.enter();
+
+        match self.get_new_articles_coalesced(group).await {
+            Ok(new_entries) if new_entries.is_empty() => {
+                tracing::trace!(%group, "No new articles");
+            }
+            Ok(new_entries) => {
+                tracing::debug!(%group, count = new_entries.len(), "Found new articles");
+                
+                // Update threads cache if it exists
+                if let Some(cached) = self.threads_cache.get(group).await {
+                    let new_hwm = new_entries.iter()
+                        .filter_map(|e| e.number())
+                        .max()
+                        .unwrap_or(cached.last_article_number);
+
+                    let merged = super::merge_articles_into_threads(&cached.threads, new_entries);
+
+                    self.threads_cache.insert(
+                        group.to_string(),
+                        CachedThreads {
+                            threads: merged,
+                            last_article_number: new_hwm,
+                        },
+                    ).await;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%group, error = %e, "Failed to fetch new articles");
+            }
+        }
+    }
+
+    /// Initialize background refresh system.
+    /// With activity-proportional refresh, individual group tasks are spawned
+    /// on-demand when groups become active. This method is kept for API compatibility
+    /// and logs that the system is ready.
+    pub fn spawn_background_refresh(self: Arc<Self>) {
+        tracing::info!(
+            "Activity-proportional background refresh enabled: \
+             {}-{}s refresh period based on request rate",
+            BACKGROUND_REFRESH_MIN_PERIOD_SECS,
+            BACKGROUND_REFRESH_MAX_PERIOD_SECS
+        );
+        // Per-group refresh tasks are spawned on-demand in mark_group_active()
     }
 
     /// Fetch an article by message ID
@@ -269,9 +736,11 @@ impl NntpFederatedService {
         if let Some(cached) = self.threads_cache.get(&cache_key).await {
             tracing::Span::current().record("cache_hit", true);
 
-            // Cache hit - check for new articles (incremental update)
-            // Try to get new articles since our cached high water mark
-            match self.get_new_articles(group, cached.last_article_number).await {
+            // Mark group as active for background refresh
+            self.mark_group_active(group).await;
+
+            // Cache hit - check for new articles (debounced + coalesced)
+            match self.get_new_articles_coalesced(group).await {
                 Ok(new_entries) if new_entries.is_empty() => {
                     // No new articles
                     tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
@@ -332,6 +801,12 @@ impl NntpFederatedService {
                             self.prefetch_group_stats_if_needed(group);
                             0
                         });
+
+                    // Update shared HWM
+                    self.update_group_hwm(group, last_article_number).await;
+
+                    // Mark group as active
+                    self.mark_group_active(group).await;
 
                     // Cache with high water mark
                     self.threads_cache
@@ -493,10 +968,49 @@ impl NntpFederatedService {
         let cache_key = format!("{}:{}", group, message_id);
 
         // Check cache first
-        if let Some(thread) = self.thread_cache.get(&cache_key).await {
+        if let Some(cached) = self.thread_cache.get(&cache_key).await {
             tracing::Span::current().record("cache_hit", true);
-            tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
-            return Ok(thread);
+
+            // Mark group as active for background refresh
+            self.mark_group_active(group).await;
+
+            // Check for new articles (debounced + coalesced)
+            match self.get_new_articles_coalesced(group).await {
+                Ok(new_entries) if new_entries.is_empty() => {
+                    // No new articles
+                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+                    return Ok(cached.thread);
+                }
+                Ok(new_entries) => {
+                    // Merge new articles into this specific thread
+                    let merged = merge_articles_into_thread(&cached.thread, new_entries);
+
+                    // Update cache if thread was modified
+                    if merged.article_count > cached.thread.article_count {
+                        self.thread_cache.insert(
+                            cache_key,
+                            CachedThread {
+                                thread: merged.clone(),
+                                group: group.to_string(),
+                            },
+                        ).await;
+                    }
+
+                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+                    return Ok(merged);
+                }
+                Err(e) => {
+                    // Failed to check for new articles, return cached data
+                    tracing::warn!(
+                        %group,
+                        %message_id,
+                        error = %e,
+                        "Failed to fetch new articles for thread, returning cached data"
+                    );
+                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+                    return Ok(cached.thread);
+                }
+            }
         }
 
         // Get servers for this group (smart dispatch)
@@ -509,7 +1023,15 @@ impl NntpFederatedService {
             match service.get_thread(group, message_id).await {
                 Ok(thread) => {
                     // Cache and return
-                    self.thread_cache.insert(cache_key, thread.clone()).await;
+                    let cached = CachedThread {
+                        thread: thread.clone(),
+                        group: group.to_string(),
+                    };
+                    self.thread_cache.insert(cache_key, cached).await;
+
+                    // Mark group as active
+                    self.mark_group_active(group).await;
+
                     tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
                     return Ok(thread);
                 }

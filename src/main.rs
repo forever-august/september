@@ -35,6 +35,8 @@ struct Args {
     #[arg(long)]
     log_format: Option<String>,
 }
+use std::sync::Arc;
+
 use nntp::NntpFederatedService;
 use routes::create_router;
 use state::AppState;
@@ -105,6 +107,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         servers = ?nntp_service.server_names(),
         "Initialized federated NNTP service"
     );
+
+    // Spawn background refresh task for active groups
+    Arc::new(nntp_service.clone()).spawn_background_refresh();
+    tracing::info!("Spawned background refresh task");
 
     // Create application state
     let state = AppState::new(config.clone(), tera, nntp_service);

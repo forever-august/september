@@ -636,6 +636,72 @@ pub fn merge_articles_into_threads(
     result
 }
 
+/// Merge new articles into a single thread.
+///
+/// Filters entries to only those that reference message IDs already in the thread,
+/// then adds them to the appropriate parent nodes.
+pub fn merge_articles_into_thread(
+    existing: &ThreadView,
+    new_entries: Vec<OverviewEntry>,
+) -> ThreadView {
+    if new_entries.is_empty() {
+        return existing.clone();
+    }
+
+    // Build set of all message IDs in the existing thread for fast lookup
+    let known_ids = collect_all_message_ids(&existing.root);
+    
+    // Filter to only entries that reference a known message ID
+    let relevant_entries: Vec<&OverviewEntry> = new_entries
+        .iter()
+        .filter(|entry| {
+            if let Some(refs) = entry.references() {
+                refs.split_whitespace().any(|ref_id| known_ids.contains(ref_id))
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    if relevant_entries.is_empty() {
+        return existing.clone();
+    }
+
+    // Clone the thread and add new entries
+    let mut updated = existing.clone();
+    
+    for entry in &relevant_entries {
+        if let Some(msg_id) = entry.message_id() {
+            // Skip if already in thread
+            if known_ids.contains(msg_id) {
+                continue;
+            }
+            
+            let new_node = ThreadNodeView {
+                message_id: msg_id.to_string(),
+                article: Some(overview_entry_to_article_view(entry)),
+                replies: Vec::new(),
+                descendant_count: 0,
+            };
+
+            // Find parent in references and add as child
+            if let Some(refs) = entry.references() {
+                if let Some(parent_id) = refs.split_whitespace().last() {
+                    add_reply_to_node(&mut updated.root, parent_id, new_node);
+                }
+            }
+        }
+    }
+
+    // Update article count and last post date
+    updated.article_count += relevant_entries.len();
+    if let Some(latest) = find_latest_date_overview(&relevant_entries) {
+        updated.last_post_date = Some(latest);
+    }
+
+    updated
+}
+
 /// Collect all message IDs in a thread tree and map them to the root
 fn collect_message_ids_to_root(
     node: &ThreadNodeView,
@@ -646,6 +712,21 @@ fn collect_message_ids_to_root(
     for reply in &node.replies {
         collect_message_ids_to_root(reply, root_id, map);
     }
+}
+
+/// Collect all message IDs in a thread tree into a HashSet for efficient lookup
+fn collect_all_message_ids(node: &ThreadNodeView) -> std::collections::HashSet<String> {
+    let mut ids = std::collections::HashSet::new();
+    let mut stack = vec![node];
+    
+    while let Some(n) = stack.pop() {
+        ids.insert(n.message_id.clone());
+        for reply in &n.replies {
+            stack.push(reply);
+        }
+    }
+    
+    ids
 }
 
 /// Add a reply node to the appropriate parent in the tree

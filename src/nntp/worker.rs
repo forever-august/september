@@ -182,6 +182,7 @@ impl NntpWorker {
     /// Priority order: High > Normal > Low
     /// Aging: If low-priority requests have been waiting longer than NNTP_PRIORITY_AGING_SECS,
     /// process one low-priority request to prevent indefinite starvation.
+    #[allow(clippy::never_loop)] // Loop is intentional for tokio::select! pattern
     async fn recv_prioritized(
         &self,
         last_low_process: &mut Instant,
@@ -236,14 +237,12 @@ impl NntpWorker {
     }
 
     /// Run the worker loop - connects to NNTP and processes requests
+    #[instrument(
+        name = "nntp.worker",
+        skip(self),
+        fields(worker_id = self.id, server = %self.server_name)
+    )]
     pub async fn run(self) {
-        let worker_span = tracing::info_span!(
-            "nntp.worker",
-            worker_id = self.id,
-            server = %self.server_name,
-        );
-        let _guard = worker_span.enter();
-
         tracing::info!("Worker starting");
 
         loop {
