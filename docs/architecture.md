@@ -58,14 +58,9 @@ graph TB
         HQ[High Priority Queue]
         NQ[Normal Priority Queue]
         LQ[Low Priority Queue]
-        subgraph Workers["Worker Pool"]
-            W1[Worker 1]
-            W2[Worker 2]
-            WN[Worker N]
-        end
     end
 
-    subgraph Workers["Worker Pool"]
+    subgraph Pool["Worker Pool"]
         W1[Worker 1]
         W2[Worker 2]
         WN[Worker N]
@@ -77,15 +72,9 @@ graph TB
 
     NNTP[(NNTP Server)]
 
-    HQ --> W1
-    HQ --> W2
-    HQ --> WN
-    NQ --> W1
-    NQ --> W2
-    NQ --> WN
-    LQ --> W1
-    LQ --> W2
-    LQ --> WN
+    HQ --> Pool
+    NQ --> Pool
+    LQ --> Pool
 
     C1 --> NNTP
     C2 --> NNTP
@@ -93,6 +82,16 @@ graph TB
 ```
 
 Each `NntpService` manages three priority queues (`async_channel`). Workers check queues in priority order (High → Normal → Low) with aging to prevent starvation. Each worker maintains its own persistent NNTP connection. Worker implementation is in `src/nntp/worker.rs:155`.
+
+**Priority levels:**
+
+| Priority | Operations | Use Case |
+|----------|------------|----------|
+| **High** | `GetArticle`, `GetThread` | User clicked on content, blocking page render |
+| **Normal** | `GetThreads`, `GetGroups` | Page load operations |
+| **Low** | `GetGroupStats`, `GetNewArticles` | Background refresh, prefetch |
+
+Priority is determined by `NntpRequest::priority()` (`src/nntp/messages.rs:57-62`). See [NNTP Service](nntp-service.md#request-priority) for details on starvation prevention.
 
 ## Module Reference
 
