@@ -6,9 +6,9 @@ This document describes September's NNTP service layer, which provides a federat
 
 The service layer has three main components:
 
-1. **NntpFederatedService** (`src/nntp/federated.rs:41`) - Unified interface over multiple servers with caching
-2. **NntpService** (`src/nntp/service.rs:47`) - Single-server communication with request coalescing
-3. **NntpWorker** (`src/nntp/worker.rs:141`) - Persistent NNTP connections that process requests
+1. **NntpFederatedService** (`src/nntp/federated.rs`) - Unified interface over multiple servers with caching
+2. **NntpService** (`src/nntp/service.rs`) - Single-server communication with request coalescing
+3. **NntpWorker** (`src/nntp/worker.rs`) - Persistent NNTP connections that process requests
 
 ## Request Flow
 
@@ -64,7 +64,7 @@ flowchart LR
     W3 --> NNTP
 ```
 
-Each `NntpService` creates three bounded `async_channel` queues for priority-based scheduling (`src/nntp/service.rs:79-81`). Workers check queues in priority order (High → Normal → Low) and maintain persistent NNTP connections.
+Each `NntpService` creates three bounded `async_channel` queues for priority-based scheduling. Workers check queues in priority order (High → Normal → Low) and maintain persistent NNTP connections.
 
 ## Request Priority
 
@@ -76,7 +76,7 @@ Requests are prioritized to ensure user-facing operations are processed before b
 | **Normal** | `GetThreads`, `GetGroups` | Page load operations |
 | **Low** | `GetGroupStats`, `GetNewArticles` | Background refresh, prefetch |
 
-Priority is determined by `NntpRequest::priority()` (`src/nntp/messages.rs:57-62`).
+Priority is determined by `NntpRequest::priority()` in `src/nntp/messages.rs`.
 
 ### Starvation Prevention (Aging)
 
@@ -86,7 +86,7 @@ To prevent low-priority requests from waiting indefinitely under sustained load,
 - If more than `NNTP_PRIORITY_AGING_SECS` (default: 10s) have passed, one low-priority request is processed
 - This ensures background tasks eventually complete even during high load
 
-Configuration constants are in `src/config.rs:122-133`.
+Configuration constants are in `src/config.rs`.
 
 ## Caching Strategy
 
@@ -105,7 +105,7 @@ Cache configuration is defined in `config/default.toml` under `[cache]`.
 
 ### Incremental Thread Updates
 
-The `threads_cache` stores a `CachedThreads` struct (`src/nntp/federated.rs:33`) containing both the thread list and a high water mark (last article number). On cache hit, the service fetches only new articles since the high water mark and merges them into the cached threads.
+The `threads_cache` stores a `CachedThreads` struct containing both the thread list and a high water mark (last article number). On cache hit, the service fetches only new articles since the high water mark and merges them into the cached threads.
 
 ## Request Coalescing
 
@@ -121,14 +121,14 @@ Request coalescing prevents duplicate NNTP requests when multiple handlers reque
 6. The pending entry is removed
 
 Coalescing occurs at two levels:
-- **NntpFederatedService** (`src/nntp/federated.rs:64`): Coalesces `group_stats` requests across all servers
-- **NntpService** (`src/nntp/service.rs:34-42`): Coalesces all request types per-server
+- **NntpFederatedService**: Coalesces `group_stats` and incremental update requests across all servers
+- **NntpService**: Coalesces all request types per-server via `PendingRequests`
 
-Pending requests include a timestamp and are considered expired after the configured request timeout (`src/nntp/service.rs:116`).
+Pending requests include a timestamp and are considered expired after the configured request timeout.
 
 ## TLS Connection Handling
 
-The `NntpStream` type (`src/nntp/tls.rs:35`) provides a unified interface for TLS and plain TCP connections.
+The `NntpStream` type in `src/nntp/tls.rs` provides a unified interface for TLS and plain TCP connections.
 
 **Connection strategy:**
 
@@ -136,7 +136,7 @@ The `NntpStream` type (`src/nntp/tls.rs:35`) provides a unified interface for TL
 2. If credentials are configured, TLS is **required** (no fallback)
 3. If no credentials, fall back to plain TCP on TLS failure
 
-This is controlled via thread-local state (`src/nntp/tls.rs:19-22`) set by the worker before connecting. The connection type is logged for debugging.
+This is controlled via thread-local state set by the worker before connecting. The connection type is logged for debugging.
 
 ## Message Types
 
@@ -151,13 +151,13 @@ Each request type has an associated priority via `NntpRequest::priority()`. Resp
 
 ## Server Capability Detection
 
-Workers detect server capabilities on connection (`src/nntp/worker.rs:219-239`):
+Workers detect server capabilities on connection via the CAPABILITIES command:
 
 - **HDR**: Efficient per-header fetching
 - **OVER**: Overview format with multiple headers
 - **LIST variants**: ACTIVE, NEWSGROUPS, OVERVIEW.FMT
 
-The `ThreadFetchMethod` (`src/nntp/worker.rs:30-38`) is selected based on capabilities:
+The `ThreadFetchMethod` enum is selected based on capabilities:
 1. HDR (preferred) - fetches each header field separately
 2. OVER - fetches overview entries with References
 3. HEAD (fallback) - fetches full headers per article

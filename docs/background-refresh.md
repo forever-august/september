@@ -120,7 +120,7 @@ flowchart LR
     INTERP --> PERIOD["refresh period (1s - 30s)"]
 ```
 
-**Formula** (`src/nntp/federated.rs:calculate_refresh_period`):
+**Formula** (`NntpFederatedService::calculate_refresh_period`):
 
 ```
 log_min = log10(1/300) ≈ -2.48  (1 request in 5 minutes)
@@ -166,7 +166,7 @@ stateDiagram-v2
     Stopped --> [*]
 ```
 
-**Task lifecycle** (`src/nntp/federated.rs:spawn_group_refresh_task`):
+**Task lifecycle** (`NntpFederatedService::spawn_group_refresh_task`):
 
 - **Spawn**: When `mark_group_active()` is called and no task exists for the group
 - **Run**: Continuously while the group has activity within the 5-minute window
@@ -206,7 +206,7 @@ sequenceDiagram
 
 ### Request Coalescing
 
-Incremental update requests are coalesced at the federated level (`src/nntp/federated.rs:get_new_articles_coalesced`):
+Incremental update requests are coalesced at the federated level (`NntpFederatedService::get_new_articles_coalesced`):
 
 - Multiple concurrent requests for the same group share a single NNTP request
 - Requests are debounced (max 1 check per second per group via `INCREMENTAL_DEBOUNCE_MS`)
@@ -214,7 +214,7 @@ Incremental update requests are coalesced at the federated level (`src/nntp/fede
 
 ### Priority
 
-All background refresh operations use `Priority::Low` (`src/nntp/messages.rs:109`), ensuring they never block user-facing requests.
+All background refresh operations use `Priority::Low`, ensuring they never block user-facing requests.
 
 ## Integration Points
 
@@ -223,23 +223,9 @@ All background refresh operations use `Priority::Low` (`src/nntp/messages.rs:109
 Arc::new(nntp_service.clone()).spawn_background_refresh();
 ```
 
-**On user request** (`src/nntp/federated.rs:get_threads`, `get_thread`):
+**On user request** (`NntpFederatedService::get_threads`, `get_thread`):
 ```rust
 self.mark_group_active(group).await;
 ```
 
 **Cache updates**: Both `get_threads()` and `get_thread()` perform incremental updates on cache hits, in addition to the background refresh tasks.
-
-## Monitoring
-
-Debug-level log messages show refresh activity:
-
-```
-DEBUG group=comp.lang.rust "Spawning background refresh task"
-DEBUG group=comp.lang.rust rps=0.50 period_secs=22.5 "Group refresh scheduled"
-DEBUG group=comp.lang.rust "Triggering incremental update"
-DEBUG group=comp.lang.rust count=3 "Found new articles"
-DEBUG group=comp.lang.rust "Group inactive, stopping refresh task"
-```
-
-Set `RUST_LOG=september=debug` to see these messages.
