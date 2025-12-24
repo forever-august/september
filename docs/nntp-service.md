@@ -161,3 +161,13 @@ The `ThreadFetchMethod` (`src/nntp/worker.rs:30-38`) is selected based on capabi
 1. HDR (preferred) - fetches each header field separately
 2. OVER - fetches overview entries with References
 3. HEAD (fallback) - fetches full headers per article
+
+## Background Refresh
+
+The service implements activity-proportional background refresh for thread caches. Rather than fixed-interval polling, each group's refresh rate scales with request activity.
+
+See [Background Refresh](background-refresh.md) for full details on:
+- Activity tracking with circular buffers
+- Log-scale refresh period calculation (1-30 seconds based on activity)
+- Per-group task lifecycle
+- Request coalescing for background fetches

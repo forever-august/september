@@ -161,6 +161,6 @@ A typical request flows through the system as follows:
 
 **Worker Pool**: Each server has its own pool of workers with persistent connections. Workers check three priority queues in order, providing both load balancing and responsive scheduling (`src/nntp/worker.rs:155-170`).
 
-**Incremental Updates**: Thread caches store a high water mark (last article number). Cache hits trigger incremental fetches for new articles only (`src/nntp/federated.rs:262-314`).
+**Incremental Updates**: Thread caches store a high water mark (last article number). Cache hits trigger incremental fetches for new articles only (`src/nntp/federated.rs:262-314`). See [Background Refresh](background-refresh.md) for the activity-proportional refresh system.
 
 **Negative Caching**: Not-found articles are cached with a short TTL to avoid repeated lookups for missing content (`src/nntp/federated.rs:121-124`, `src/nntp/federated.rs:194-197`).
