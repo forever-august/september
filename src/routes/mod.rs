@@ -10,6 +10,7 @@
 pub mod article;
 pub mod auth;
 pub mod home;
+pub mod post;
 pub mod threads;
 
 use axum::{middleware, routing::{get, post}, Router};
@@ -73,12 +74,19 @@ pub fn create_router(state: AppState) -> Router {
         .route("/auth/callback/{provider}", get(auth::callback))
         .route("/auth/logout", post(auth::logout));
 
+    // Post routes - no caching (stateful)
+    let post_routes = Router::new()
+        .route("/g/{group}/compose", get(post::compose))
+        .route("/g/{group}/post", post(post::submit))
+        .route("/a/{message_id}/reply", post(post::reply));
+
     Router::new()
         .merge(article_routes)
         .merge(thread_view_routes)
         .merge(thread_list_routes)
         .merge(home_routes)
         .merge(auth_routes)
+        .merge(post_routes)
         .merge(static_routes)
         .with_state(state.clone())
         // Auth layer - extracts user from session cookie and handles session refresh

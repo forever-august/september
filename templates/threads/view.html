@@ -50,6 +50,24 @@
                 <p class="no-content">Article content not available.</p>
                 {% endif %}
             </div>
+            {% if user and can_post %}
+            <div class="comment-actions">
+                <button type="button" class="reply-toggle" onclick="toggleReplyForm(this)">Reply</button>
+            </div>
+            <div class="reply-form-container" style="display: none;">
+                <form action="/a/{{ comment.message_id | urlencode_strict }}/reply" method="POST" class="reply-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="group" value="{{ group }}">
+                    <input type="hidden" name="subject" value="Re: {{ comment.article.subject }}">
+                    <input type="hidden" name="references" value="{{ comment.references | default(value='') }}">
+                    <textarea name="body" required rows="5" maxlength="64000" placeholder="Write your reply..."></textarea>
+                    <div class="reply-form-actions">
+                        <button type="submit" class="submit-button">Post Reply</button>
+                        <button type="button" class="cancel-button" onclick="toggleReplyForm(this)">Cancel</button>
+                    </div>
+                </form>
+            </div>
+            {% endif %}
             {% else %}
             <div class="comment-placeholder">
                 [Missing article: {{ comment.message_id }}]

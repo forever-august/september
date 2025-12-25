@@ -35,6 +35,24 @@
         {% endif %}
     </div>
 
+    {% if user and can_post and group %}
+    <div class="article-actions">
+        <button type="button" class="reply-toggle" onclick="toggleReplyForm(this)">Reply to this article</button>
+    </div>
+    <div class="reply-form-container" style="display: none;">
+        <form action="/a/{{ article.message_id | urlencode_strict }}/reply" method="POST" class="reply-form">
+            <input type="hidden" name="group" value="{{ group }}">
+            <input type="hidden" name="subject" value="Re: {{ article.subject }}">
+            <input type="hidden" name="references" value="{{ article.references | default(value='') }}">
+            <textarea name="body" required rows="8" placeholder="Write your reply..."></textarea>
+            <div class="reply-form-actions">
+                <button type="submit" class="submit-button">Post Reply</button>
+                <button type="button" class="cancel-button" onclick="toggleReplyForm(this)">Cancel</button>
+            </div>
+        </form>
+    </div>
+    {% endif %}
+
     <footer class="article-footer">
         <p class="message-id">Message-ID: {{ article.message_id }}</p>
     </footer>

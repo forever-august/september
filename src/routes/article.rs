@@ -46,9 +46,24 @@ pub async fn view(
         .with_request_id(&request_id)?;
 
     // Determine back link based on query param
-    let (back_url, back_label) = match &params.back {
-        Some(back) => (back.clone(), extract_back_label(back)),
-        None => ("/".to_string(), "Back".to_string()),
+    let (back_url, back_label, group) = match &params.back {
+        Some(back) => {
+            let label = extract_back_label(back);
+            let group = extract_group_from_back(back);
+            (back.clone(), label, group)
+        }
+        None => ("/".to_string(), "Back".to_string(), None),
+    };
+
+    // Check if user can post (needs group and email)
+    let can_post = if let Some(ref g) = group {
+        if current_user.0.as_ref().map(|u| u.email.is_some()).unwrap_or(false) {
+            state.nntp.can_post_to_group(g).await
+        } else {
+            false
+        }
+    } else {
+        false
     };
 
     let mut context = tera::Context::new();
@@ -56,6 +71,10 @@ pub async fn view(
     context.insert("article", &article);
     context.insert("back_url", &back_url);
     context.insert("back_label", &back_label);
+    context.insert("can_post", &can_post);
+    if let Some(ref g) = group {
+        context.insert("group", g);
+    }
 
     // Auth context for header
     context.insert("oidc_enabled", &state.oidc.is_some());
@@ -88,4 +107,15 @@ fn extract_back_label(back: &str) -> String {
         }
     }
     "Back".to_string()
+}
+
+/// Extract group name from the back URL if present
+fn extract_group_from_back(back: &str) -> Option<String> {
+    if back.starts_with("/g/") {
+        let parts: Vec<&str> = back.split('/').collect();
+        if parts.len() >= 3 {
+            return Some(parts[2].to_string());
+        }
+    }
+    None
 }

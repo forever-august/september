@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_channel::Receiver;
@@ -55,6 +57,10 @@ struct ServerCapabilities {
     references_in_overview: bool,
     /// Whether capabilities were successfully retrieved
     retrieved: bool,
+    /// Whether POST command is supported (from CAPABILITIES)
+    post_supported: bool,
+    /// Whether the greeting/MODE READER allows posting
+    greeting_allows_post: bool,
 }
 
 impl ServerCapabilities {
@@ -63,6 +69,7 @@ impl ServerCapabilities {
         let mut list_variants = HashSet::new();
         let mut hdr_supported = false;
         let mut over_supported = false;
+        let mut post_supported = false;
 
         for cap in caps {
             let cap_upper = cap.to_uppercase();
@@ -79,6 +86,8 @@ impl ServerCapabilities {
                 hdr_supported = true;
             } else if cap_upper == "OVER" || cap_upper.starts_with("OVER ") {
                 over_supported = true;
+            } else if cap_upper == "POST" || cap_upper.starts_with("POST ") {
+                post_supported = true;
             }
         }
 
@@ -88,6 +97,8 @@ impl ServerCapabilities {
             over_supported,
             references_in_overview: false, // Will be set after LIST OVERVIEW.FMT
             retrieved: true,
+            post_supported,
+            greeting_allows_post: false, // Will be set from client.is_posting_allowed()
         }
     }
 
@@ -140,6 +151,12 @@ impl ServerCapabilities {
             ("LIST", ListVariant::Basic(None)),
         ]
     }
+
+    /// Check if posting is supported
+    /// Requires both the greeting/MODE READER to allow posting AND POST in CAPABILITIES
+    fn can_post(&self) -> bool {
+        self.greeting_allows_post && self.post_supported
+    }
 }
 
 /// Worker that processes NNTP requests from priority queues
@@ -154,6 +171,10 @@ pub struct NntpWorker {
     normal_rx: Receiver<NntpRequest>,
     /// Low-priority request queue (background: GetGroupStats, GetNewArticles)
     low_rx: Receiver<NntpRequest>,
+    /// Shared counter of connected workers (for service-level tracking)
+    connected_workers: Arc<AtomicUsize>,
+    /// Shared counter of workers with posting capability
+    posting_workers: Arc<AtomicUsize>,
 }
 
 impl NntpWorker {
@@ -165,6 +186,8 @@ impl NntpWorker {
         high_rx: Receiver<NntpRequest>,
         normal_rx: Receiver<NntpRequest>,
         low_rx: Receiver<NntpRequest>,
+        connected_workers: Arc<AtomicUsize>,
+        posting_workers: Arc<AtomicUsize>,
     ) -> Self {
         Self {
             id,
@@ -174,6 +197,8 @@ impl NntpWorker {
             high_rx,
             normal_rx,
             low_rx,
+            connected_workers,
+            posting_workers,
         }
     }
 
@@ -293,6 +318,20 @@ impl NntpWorker {
                 }
             }
 
+            // Switch to reader mode (RFC 3977 Section 5.3)
+            // MODE READER may update posting capability based on authentication state
+            match client.mode_reader().await {
+                Ok(_status) => {
+                    tracing::debug!("MODE READER completed");
+                }
+                Err(e) => {
+                    // MODE READER is required per RFC 3977; failure is fatal for this connection
+                    tracing::error!(error = %e, "MODE READER failed");
+                    tokio::time::sleep(Duration::from_secs(NNTP_RECONNECT_DELAY_SECS)).await;
+                    continue;
+                }
+            }
+
             // Query server capabilities to determine supported commands
             let mut capabilities = match client.capabilities().await {
                 Ok(caps) => {
@@ -342,9 +381,20 @@ impl NntpWorker {
                 }
             }
 
+            // Set greeting_allows_post from the client's tracking of greeting/MODE READER response
+            capabilities.greeting_allows_post = client.is_posting_allowed();
+
+            // Increment connection counters now that setup is complete
+            self.connected_workers.fetch_add(1, Ordering::Relaxed);
+            let can_post = capabilities.can_post();
+            if can_post {
+                self.posting_workers.fetch_add(1, Ordering::Relaxed);
+            }
+
             tracing::info!(
                 method = ?capabilities.thread_fetch_method(),
-                "Thread fetch method selected"
+                can_post = can_post,
+                "Worker ready"
             );
 
             // Track when we last processed a low-priority request (for aging)
@@ -355,6 +405,11 @@ impl NntpWorker {
                 let request = match self.recv_prioritized(&mut last_low_process).await {
                     Ok(req) => req,
                     Err(_) => {
+                        // Decrement counters before shutting down
+                        self.connected_workers.fetch_sub(1, Ordering::Relaxed);
+                        if can_post {
+                            self.posting_workers.fetch_sub(1, Ordering::Relaxed);
+                        }
                         tracing::info!("Request channels closed, worker shutting down");
                         return;
                     }
@@ -378,6 +433,11 @@ impl NntpWorker {
                 request.respond(result);
 
                 if should_reconnect {
+                    // Decrement counters before reconnecting
+                    self.connected_workers.fetch_sub(1, Ordering::Relaxed);
+                    if can_post {
+                        self.posting_workers.fetch_sub(1, Ordering::Relaxed);
+                    }
                     tracing::warn!("Connection error, will reconnect");
                     break;
                 }
@@ -689,6 +749,46 @@ impl NntpWorker {
                 );
 
                 Ok(NntpResponse::NewArticles(entries.to_vec()))
+            }
+
+            NntpRequest::PostArticle { headers, body, .. } => {
+                Span::current().record("operation", "post_article");
+                tracing::debug!("Posting article");
+
+                // Format the article for POST command
+                // Headers is a Vec<(String, String)> of header name/value pairs
+                // Body is the article body text
+                
+                let mut article_lines: Vec<String> = Vec::new();
+                
+                // Add headers
+                for (name, value) in headers {
+                    article_lines.push(format!("{}: {}", name, value));
+                }
+                
+                // Blank line between headers and body
+                article_lines.push(String::new());
+                
+                // Add body lines
+                for line in body.lines() {
+                    // Dot-stuffing: lines starting with "." get an extra "." prepended
+                    if line.starts_with('.') {
+                        article_lines.push(format!(".{}", line));
+                    } else {
+                        article_lines.push(line.to_string());
+                    }
+                }
+                
+                // Join all lines with CRLF for the nntp_rs client's post method
+                let article_content = article_lines.join("\r\n");
+                
+                // Use the nntp_rs client's post method
+                client
+                    .post(article_content)
+                    .await
+                    .map_err(|e| NntpError(e.to_string()))?;
+                
+                Ok(NntpResponse::PostResult)
             }
         }
     }

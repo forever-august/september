@@ -17,7 +17,7 @@ nntp-rs = { git = "https://github.com/forever-august/nntp-rs", features = ["toki
 
 # TLS support
 tokio-rustls = "0.26"
-rustls = "0.23"
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
 webpki-roots = "0.26"
 rustls-pki-types = "1"
 async-trait = "0.1"
@@ -58,7 +58,7 @@ axum-extra = { version = "0.10", features = ["cookie-private"] }
 moka = { version = "0.12", features = ["future"] }
 sha2 = "0.10.9"
 hkdf = "0.12.4"
-reqwest = { version = "0.12.28", features = ["json"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 urlencoding = "2"
 time = "0.3"
 serde_json = "1"

@@ -93,6 +93,14 @@ pub enum NntpRequest {
         since_article_number: u64,
         response: oneshot::Sender<Result<Vec<OverviewEntry>, NntpError>>,
     },
+    /// Post a new article or reply
+    PostArticle {
+        /// Headers as name/value pairs (From, Subject, Newsgroups, References, Date, Message-ID, etc.)
+        headers: Vec<(String, String)>,
+        /// Article body text (plain text)
+        body: String,
+        response: oneshot::Sender<Result<(), NntpError>>,
+    },
 }
 
 impl NntpRequest {
@@ -104,7 +112,7 @@ impl NntpRequest {
     /// - Low: Background refresh operations (GetGroupStats, GetNewArticles)
     pub fn priority(&self) -> Priority {
         match self {
-            NntpRequest::GetArticle { .. } | NntpRequest::GetThread { .. } => Priority::High,
+            NntpRequest::GetArticle { .. } | NntpRequest::GetThread { .. } | NntpRequest::PostArticle { .. } => Priority::High,
             NntpRequest::GetThreads { .. } | NntpRequest::GetGroups { .. } => Priority::Normal,
             NntpRequest::GetGroupStats { .. } | NntpRequest::GetNewArticles { .. } => Priority::Low,
         }
@@ -155,6 +163,13 @@ impl NntpRequest {
                     let _ = response.send(Err(e));
                 }
             }
+            NntpRequest::PostArticle { response, .. } => {
+                if let Ok(NntpResponse::PostResult) = result {
+                    let _ = response.send(Ok(()));
+                } else if let Err(e) = result {
+                    let _ = response.send(Err(e));
+                }
+            }
         }
     }
 }
@@ -167,4 +182,5 @@ pub enum NntpResponse {
     Article(ArticleView),
     GroupStats(GroupStatsView),
     NewArticles(Vec<OverviewEntry>),
+    PostResult,
 }

@@ -51,11 +51,19 @@ pub async fn list(
         let _ = nntp.get_group_stats(&group_name).await;
     });
 
+    // Check if user can post to this group
+    let can_post = if current_user.0.as_ref().map(|u| u.email.is_some()).unwrap_or(false) {
+        state.nntp.can_post_to_group(&group).await
+    } else {
+        false
+    };
+
     let mut context = tera::Context::new();
     context.insert("config", &state.config.ui);
     context.insert("group", &group);
     context.insert("threads", &threads);
     context.insert("pagination", &pagination);
+    context.insert("can_post", &can_post);
     
     // Auth context for header
     context.insert("oidc_enabled", &state.oidc.is_some());
@@ -111,12 +119,20 @@ pub async fn view(
         .map_err(|_| AppError::ArticleNotFound(path.message_id.clone()))
         .with_request_id(&request_id)?;
 
+    // Check if user can post to this group
+    let can_post = if current_user.0.as_ref().map(|u| u.email.is_some()).unwrap_or(false) {
+        state.nntp.can_post_to_group(&path.group).await
+    } else {
+        false
+    };
+
     let mut context = tera::Context::new();
     context.insert("config", &state.config.ui);
     context.insert("group", &path.group);
     context.insert("thread", &thread);
     context.insert("comments", &comments);
     context.insert("pagination", &pagination);
+    context.insert("can_post", &can_post);
 
     // Auth context for header
     context.insert("oidc_enabled", &state.oidc.is_some());
@@ -124,6 +140,8 @@ pub async fn view(
         context.insert("user", &serde_json::json!({
             "display_name": user.display_name(),
         }));
+        // Include CSRF token for reply forms
+        context.insert("csrf_token", &user.csrf_token);
     }
 
     let html = state

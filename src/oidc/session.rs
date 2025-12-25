@@ -3,6 +3,7 @@
 //! Provides:
 //! - `User`: Authenticated user information stored in session cookie
 //! - `AuthFlowState`: Temporary state during OAuth2 authorization flow
+//! - `CsrfToken`: Token for CSRF protection on forms
 
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,6 +23,26 @@ pub struct User {
     pub provider: String,
     /// When this session expires (Unix timestamp)
     pub expires_at: u64,
+    /// CSRF token for form protection
+    #[serde(default = "generate_csrf_token")]
+    pub csrf_token: String,
+}
+
+/// Generate a random CSRF token
+fn generate_csrf_token() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    
+    // Use RandomState to generate a unique token
+    let state = RandomState::new();
+    let mut hasher = state.build_hasher();
+    hasher.write_u64(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64,
+    );
+    format!("{:016x}", hasher.finish())
 }
 
 impl User {
@@ -45,6 +66,7 @@ impl User {
             email,
             provider,
             expires_at,
+            csrf_token: generate_csrf_token(),
         }
     }
     
@@ -87,21 +109,31 @@ impl User {
             .or(self.email.as_deref())
             .unwrap_or(&self.sub)
     }
+    
+    /// Validate a CSRF token against the session's token
+    pub fn validate_csrf(&self, token: &str) -> bool {
+        // Use constant-time comparison to prevent timing attacks
+        if self.csrf_token.len() != token.len() {
+            return false;
+        }
+        self.csrf_token
+            .bytes()
+            .zip(token.bytes())
+            .fold(0, |acc, (a, b)| acc | (a ^ b))
+            == 0
+    }
 }
 
 /// Temporary state stored during OAuth2 authorization flow.
 /// 
 /// This is stored in a short-lived cookie and contains:
 /// - CSRF token (state parameter)
-/// - Nonce for ID token validation
 /// - PKCE code verifier
 /// - Return URL after login
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthFlowState {
     /// CSRF protection token (sent as "state" parameter)
     pub csrf_token: String,
-    /// Nonce for ID token validation (OIDC)
-    pub nonce: String,
     /// PKCE code verifier
     pub pkce_verifier: String,
     /// URL to redirect to after successful login
@@ -114,7 +146,6 @@ impl AuthFlowState {
     /// Create new auth flow state with 10-minute expiry
     pub fn new(
         csrf_token: String,
-        nonce: String,
         pkce_verifier: String,
         return_to: Option<String>,
     ) -> Self {
@@ -126,7 +157,6 @@ impl AuthFlowState {
         
         Self {
             csrf_token,
-            nonce,
             pkce_verifier,
             return_to,
             expires_at,

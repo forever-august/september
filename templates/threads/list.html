@@ -4,7 +4,12 @@
 
 {% block content %}
 <div class="group-header">
-    <h1>{{ group }}</h1>
+    <div class="group-header-top">
+        <h1>{{ group }}</h1>
+        {% if user and can_post %}
+        <a href="/g/{{ group }}/compose" class="new-post-button">New Post</a>
+        {% endif %}
+    </div>
     <p class="thread-count">{{ pagination.total_items }} threads</p>
 </div>
 

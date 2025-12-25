@@ -11,9 +11,12 @@ use axum::{
     response::{Html, IntoResponse, Redirect, Response},
     Form,
 };
-use axum_extra::extract::cookie::{Cookie, PrivateCookieJar, SameSite};
-use http::StatusCode;
-use openidconnect::{CsrfToken, Nonce, PkceCodeChallenge};
+use axum_extra::extract::{
+    cookie::{Cookie, PrivateCookieJar, SameSite},
+    Host,
+};
+use http::{StatusCode, HeaderMap};
+use openidconnect::{CsrfToken, PkceCodeChallenge};
 use serde::Deserialize;
 use time::Duration as TimeDuration;
 use tracing::instrument;
@@ -42,6 +45,50 @@ pub struct CallbackQuery {
 pub struct LogoutForm {
     /// Optional URL to redirect to after logout
     pub return_to: Option<String>,
+}
+
+/// Validate a return_to URL to prevent open redirects.
+/// Only allows relative paths starting with "/" and not containing "//".
+fn validate_return_to(return_to: Option<&str>) -> Option<String> {
+    let url = return_to?;
+    let trimmed = url.trim();
+    
+    // Must start with "/" (relative path)
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    
+    // Must not contain "//" which could be a protocol-relative URL
+    if trimmed.contains("//") {
+        return None;
+    }
+    
+    // Must not contain control characters or start with "/\"
+    if trimmed.starts_with("/\\") || trimmed.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    
+    Some(trimmed.to_string())
+}
+
+/// Detect if the request is using HTTPS based on headers and scheme.
+/// Checks X-Forwarded-Proto header first (for reverse proxies), then request scheme.
+fn detect_https(headers: &HeaderMap) -> bool {
+    // Check X-Forwarded-Proto header (set by reverse proxies)
+    if let Some(proto) = headers.get("x-forwarded-proto") {
+        if let Ok(proto_str) = proto.to_str() {
+            return proto_str.eq_ignore_ascii_case("https");
+        }
+    }
+    
+    // Check X-Forwarded-Ssl header
+    if let Some(ssl) = headers.get("x-forwarded-ssl") {
+        if let Ok(ssl_str) = ssl.to_str() {
+            return ssl_str.eq_ignore_ascii_case("on");
+        }
+    }
+    
+    false
 }
 
 /// Show provider selection page or redirect to single provider
@@ -93,10 +140,12 @@ pub async fn login(
 }
 
 /// Initiate OIDC flow with specific provider
-#[instrument(name = "auth::login_provider", skip(state, jar), fields(provider = %provider))]
+#[instrument(name = "auth::login_provider", skip(state, jar, headers), fields(provider = %provider))]
 pub async fn login_provider(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
+    Host(host): Host,
+    headers: HeaderMap,
     Path(provider): Path<String>,
     Query(query): Query<LoginQuery>,
 ) -> Result<(PrivateCookieJar, Redirect), AuthError> {
@@ -109,34 +158,36 @@ pub async fn login_provider(
     // Generate PKCE challenge
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
     
-    // Generate CSRF token and nonce
+    // Generate CSRF token
     let csrf_token = CsrfToken::new_random();
-    let nonce = Nonce::new_random();
     
-    // Determine redirect URI from request or config
-    // For now, we'll use a placeholder - in real usage, extract from Host header
+    // Detect HTTPS from headers
+    let use_https = detect_https(&headers);
+    
+    // Build redirect URI from Host header
     let redirect_uri = oidc
-        .build_redirect_uri("localhost:3000", &provider, false)
+        .build_redirect_uri(&host, &provider, use_https)
         .map_err(|e| AuthError::Internal(e.to_string()))?;
     
     // Build authorization URL
     let auth_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
         provider_config.endpoints.auth_url.as_str(),
         urlencoding::encode(provider_config.client_id.as_str()),
         urlencoding::encode(redirect_uri.as_str()),
         urlencoding::encode("openid email profile"),
         urlencoding::encode(csrf_token.secret()),
-        urlencoding::encode(nonce.secret()),
         urlencoding::encode(pkce_challenge.as_str()),
     );
+    
+    // Validate return_to to prevent open redirects
+    let safe_return_to = validate_return_to(query.return_to.as_deref());
     
     // Store flow state in cookie
     let flow_state = AuthFlowState::new(
         csrf_token.secret().to_string(),
-        nonce.secret().to_string(),
         pkce_verifier.secret().to_string(),
-        query.return_to,
+        safe_return_to,
     );
     
     let flow_state_json = serde_json::to_string(&flow_state)
@@ -155,10 +206,12 @@ pub async fn login_provider(
 }
 
 /// Handle IdP callback
-#[instrument(name = "auth::callback", skip(state, jar), fields(provider = %provider))]
+#[instrument(name = "auth::callback", skip(state, jar, headers), fields(provider = %provider))]
 pub async fn callback(
     State(state): State<AppState>,
     jar: PrivateCookieJar,
+    Host(host): Host,
+    headers: HeaderMap,
     Path(provider): Path<String>,
     Query(query): Query<CallbackQuery>,
 ) -> Result<(PrivateCookieJar, Response), AuthError> {
@@ -203,9 +256,12 @@ pub async fn callback(
         .get_provider(&provider)
         .ok_or_else(|| AuthError::ProviderNotFound(provider.clone()))?;
     
-    // Exchange code for tokens
+    // Detect HTTPS from headers
+    let use_https = detect_https(&headers);
+    
+    // Exchange code for tokens - use the same redirect URI as in login
     let redirect_uri = oidc
-        .build_redirect_uri("localhost:3000", &provider, false)
+        .build_redirect_uri(&host, &provider, use_https)
         .map_err(|e| AuthError::Internal(e.to_string()))?;
     
     let token_response = exchange_code_for_tokens(
@@ -266,7 +322,7 @@ pub async fn callback(
     
     let jar = jar.add(session_cookie).remove(remove_flow_cookie);
     
-    // Redirect to return_to or home
+    // Redirect to return_to (already validated during login) or home
     let redirect_url = flow_state.return_to.as_deref().unwrap_or("/");
     
     Ok((jar, Redirect::to(redirect_url).into_response()))
@@ -287,8 +343,10 @@ pub async fn logout(
     
     let jar = jar.remove(remove_cookie);
     
-    let redirect_url = form.return_to.as_deref().unwrap_or("/");
-    (jar, Redirect::to(redirect_url))
+    // Validate return_to to prevent open redirects
+    let redirect_url = validate_return_to(form.return_to.as_deref())
+        .unwrap_or_else(|| "/".to_string());
+    (jar, Redirect::to(&redirect_url))
 }
 
 /// Token response from token endpoint
@@ -300,12 +358,9 @@ struct TokenResponseData {
     #[serde(default)]
     #[allow(dead_code)]
     expires_in: Option<u64>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    id_token: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    refresh_token: Option<String>,
+    // Note: id_token and refresh_token are intentionally not captured.
+    // We rely on the userinfo endpoint for user claims, which is more
+    // compatible across OAuth2/OIDC providers.
 }
 
 /// Exchange authorization code for tokens
@@ -462,7 +517,9 @@ impl IntoResponse for AuthError {
             }
         };
         
-        // Return simple error page
+        // Return error page using template structure
+        // Note: We use inline HTML here since we don't have access to Tera in the error handler.
+        // This matches the structure of templates/auth/error.html
         let body = format!(
             r#"<!DOCTYPE html>
 <html>
@@ -471,13 +528,18 @@ impl IntoResponse for AuthError {
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
-    <div class="container">
+    <header class="site-header">
+        <nav class="main-nav">
+            <a href="/" class="nav-home">Home</a>
+        </nav>
+    </header>
+    <main class="container">
         <div class="error-page">
             <h1>Authentication Error</h1>
             <p>{}</p>
             <a href="/">Return to homepage</a>
         </div>
-    </div>
+    </main>
 </body>
 </html>"#,
             message

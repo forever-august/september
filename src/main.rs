@@ -46,6 +46,11 @@ use templates::init_templates;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Install rustls crypto provider (must be done before any TLS operations)
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // Parse command line arguments
     let args = Args::parse();
 

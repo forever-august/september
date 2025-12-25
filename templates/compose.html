@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}New Post in {{ group }} - {{ config.site_name }}{% endblock %}
+
+{% block content %}
+<div class="compose-page">
+    <header class="compose-header">
+        <a href="/g/{{ group }}" class="back-link">&larr; Back to {{ group }}</a>
+        <h1>New Post</h1>
+        <p class="compose-info">Posting as {{ user.email }}</p>
+    </header>
+
+    <form action="/g/{{ group }}/post" method="POST" class="compose-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        
+        <div class="form-group">
+            <label for="subject">Subject</label>
+            <input type="text" id="subject" name="subject" required 
+                   maxlength="500"
+                   placeholder="Enter a descriptive subject"
+                   class="form-input">
+        </div>
+
+        <div class="form-group">
+            <label for="body">Message</label>
+            <textarea id="body" name="body" required 
+                      rows="15"
+                      maxlength="64000"
+                      placeholder="Enter your message (plain text)"
+                      class="form-textarea"></textarea>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="submit-button">Post</button>
+            <a href="/g/{{ group }}" class="cancel-link">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -3,17 +3,18 @@
 //! Provides:
 //! - Request ID generation for log correlation
 //! - Session extraction and refresh (sliding window)
+//! - RequireAuth extractor for protected routes
 
 use std::time::Duration;
 use std::time::Instant;
 
 use axum::{
-    extract::{Request, State},
+    extract::{FromRequestParts, Request, State},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use axum_extra::extract::cookie::{Cookie, PrivateCookieJar, SameSite};
-use http::header::SET_COOKIE;
+use http::{header::SET_COOKIE, request::Parts, StatusCode};
 use time::Duration as TimeDuration;
 
 use crate::oidc::session::{cookie_names, User};
@@ -35,6 +36,151 @@ impl CurrentUser {
     /// Get a reference to the user, if authenticated
     pub fn user(&self) -> Option<&User> {
         self.0.as_ref()
+    }
+}
+
+/// Extractor that requires authentication.
+/// 
+/// Use this in route handlers that require an authenticated user.
+/// If the user is not authenticated, returns a 401 Unauthorized response.
+/// 
+/// # Example
+/// ```ignore
+/// pub async fn protected_handler(
+///     RequireAuth(user): RequireAuth,
+/// ) -> impl IntoResponse {
+///     // user is guaranteed to be authenticated here
+///     format!("Hello, {}!", user.display_name())
+/// }
+/// ```
+#[derive(Clone, Debug)]
+pub struct RequireAuth(pub User);
+
+/// Extractor that requires authentication with a valid email.
+/// 
+/// Use this for posting routes that require both authentication and an email address.
+/// Returns appropriate errors if not authenticated or if email is missing.
+/// 
+/// # Example
+/// ```ignore
+/// pub async fn post_handler(
+///     RequireAuthWithEmail { user, email }: RequireAuthWithEmail,
+/// ) -> impl IntoResponse {
+///     // user is authenticated and has a valid email
+///     format!("Posting as {}", email)
+/// }
+/// ```
+#[derive(Clone, Debug)]
+pub struct RequireAuthWithEmail {
+    pub user: User,
+    pub email: String,
+}
+
+/// Error type for authentication failures
+#[derive(Debug)]
+pub enum AuthError {
+    /// User is not authenticated
+    NotAuthenticated,
+    /// User is authenticated but missing required email
+    MissingEmail,
+}
+
+impl IntoResponse for AuthError {
+    fn into_response(self) -> Response {
+        match self {
+            AuthError::NotAuthenticated => {
+                // Return 401 with a message suggesting login
+                let body = r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Authentication Required</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="main-nav">
+            <a href="/" class="nav-home">Home</a>
+        </nav>
+    </header>
+    <main class="container">
+        <div class="error-page">
+            <h1>Authentication Required</h1>
+            <p>You must be logged in to access this page.</p>
+            <a href="/auth/login">Log in</a>
+        </div>
+    </main>
+</body>
+</html>"#;
+                (StatusCode::UNAUTHORIZED, axum::response::Html(body)).into_response()
+            }
+            AuthError::MissingEmail => {
+                let body = r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>Email Required</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="main-nav">
+            <a href="/" class="nav-home">Home</a>
+        </nav>
+    </header>
+    <main class="container">
+        <div class="error-page">
+            <h1>Email Required</h1>
+            <p>Your account does not have an email address, which is required for posting.</p>
+            <a href="/">Return to homepage</a>
+        </div>
+    </main>
+</body>
+</html>"#;
+                (StatusCode::FORBIDDEN, axum::response::Html(body)).into_response()
+            }
+        }
+    }
+}
+
+impl<S> FromRequestParts<S> for RequireAuth
+where
+    S: Send + Sync,
+{
+    type Rejection = AuthError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let current_user = parts
+            .extensions
+            .get::<CurrentUser>()
+            .cloned()
+            .unwrap_or(CurrentUser(None));
+
+        match current_user.0 {
+            Some(user) if !user.is_expired() => Ok(RequireAuth(user)),
+            _ => Err(AuthError::NotAuthenticated),
+        }
+    }
+}
+
+impl<S> FromRequestParts<S> for RequireAuthWithEmail
+where
+    S: Send + Sync,
+{
+    type Rejection = AuthError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let current_user = parts
+            .extensions
+            .get::<CurrentUser>()
+            .cloned()
+            .unwrap_or(CurrentUser(None));
+
+        match current_user.0 {
+            Some(user) if !user.is_expired() => {
+                let email = user.email.clone().ok_or(AuthError::MissingEmail)?;
+                Ok(RequireAuthWithEmail { user, email })
+            }
+            _ => Err(AuthError::NotAuthenticated),
+        }
     }
 }
 

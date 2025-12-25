@@ -6,6 +6,7 @@
 //! before background tasks. Caching is handled at the federated service level.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -70,6 +71,10 @@ pub struct NntpService {
     request_timeout: Duration,
     /// Pending requests for coalescing
     pending: Arc<PendingRequests>,
+    /// Count of workers with active connections
+    connected_workers: Arc<AtomicUsize>,
+    /// Count of workers whose connections allow posting
+    posting_workers: Arc<AtomicUsize>,
 }
 
 impl NntpService {
@@ -101,12 +106,19 @@ impl NntpService {
                 groups: Mutex::new(None),
                 group_stats: Mutex::new(HashMap::new()),
             }),
+            connected_workers: Arc::new(AtomicUsize::new(0)),
+            posting_workers: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     /// Get the server name
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Check if posting is allowed (at least one worker has a posting-capable connection)
+    pub fn is_posting_allowed(&self) -> bool {
+        self.posting_workers.load(Ordering::Relaxed) > 0
     }
 
     /// Send a request to the appropriate priority queue
@@ -131,6 +143,8 @@ impl NntpService {
                 self.high_rx.clone(),
                 self.normal_rx.clone(),
                 self.low_rx.clone(),
+                self.connected_workers.clone(),
+                self.posting_workers.clone(),
             );
             tokio::spawn(worker.run());
         }
@@ -443,5 +457,37 @@ impl NntpService {
             Ok(Err(_)) => Err(NntpError("Worker dropped request".into())),
             Err(_) => Err(NntpError("Request timeout".into())),
         }
+    }
+
+    /// Post an article to the server
+    #[instrument(
+        name = "nntp.service.post_article",
+        skip(self, headers, body),
+        fields(server = %self.name, duration_ms)
+    )]
+    pub async fn post_article(
+        &self,
+        headers: Vec<(String, String)>,
+        body: String,
+    ) -> Result<(), NntpError> {
+        let start = Instant::now();
+        
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.send_request(NntpRequest::PostArticle {
+            headers,
+            body,
+            response: resp_tx,
+        })
+        .await?;
+
+        // Wait for result with timeout
+        let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(NntpError("Worker dropped request".into())),
+            Err(_) => Err(NntpError("Request timeout".into())),
+        };
+
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+        result
     }
 }

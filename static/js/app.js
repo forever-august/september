@@ -1,3 +1,18 @@
+// Toggle reply form visibility
+function toggleReplyForm(button) {
+    var container = button.closest('.comment, .article-view');
+    var formContainer = container.querySelector('.reply-form-container');
+    if (formContainer) {
+        if (formContainer.style.display === 'none') {
+            formContainer.style.display = 'block';
+            var textarea = formContainer.querySelector('textarea');
+            if (textarea) textarea.focus();
+        } else {
+            formContainer.style.display = 'none';
+        }
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     // Thread collapse/expand functionality for flat comment list
     var comments = document.querySelectorAll('.comment');
