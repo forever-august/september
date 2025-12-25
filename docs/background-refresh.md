@@ -229,3 +229,55 @@ self.mark_group_active(group).await;
 ```
 
 **Cache updates**: Both `get_threads()` and `get_thread()` perform incremental updates on cache hits, in addition to the background refresh tasks.
+
+## Group Stats Refresh
+
+In addition to the activity-proportional thread refresh, a separate system keeps group statistics (last article date and high water mark) up to date.
+
+### Design
+
+- **One task per group**: Each group gets its own long-running async task
+- **Fixed 1-hour interval**: `GROUP_STATS_REFRESH_INTERVAL_SECS` (3600 seconds)
+- **Low priority**: Uses existing `get_group_stats()` which is `Priority::Low`
+- **Dynamic group tracking**: Detects new/removed groups and spawns/aborts tasks accordingly
+
+### Architecture
+
+```mermaid
+flowchart TB
+    subgraph Coordinator["Group Stats Coordinator"]
+        direction TB
+        FG[Fetch group list]
+        DIFF[Detect new/removed groups]
+        FG --> DIFF
+    end
+
+    subgraph Tasks["Per-Group Stats Tasks"]
+        T1[Group A<br/>get_group_stats<br/>sleep 1h]
+        T2[Group B<br/>get_group_stats<br/>sleep 1h]
+        T3[Group C<br/>get_group_stats<br/>sleep 1h]
+    end
+
+    DIFF -->|spawn new| Tasks
+    DIFF -->|abort removed| Tasks
+    Tasks --> NNTP[(NNTP Server<br/>Low Priority)]
+
+    Coordinator -->|every hour| Coordinator
+```
+
+### Task Lifecycle
+
+1. **Startup**: `spawn_background_refresh()` starts the coordinator task
+2. **Coordinator loop**: Every hour, fetches the current group list
+   - Spawns refresh tasks for newly discovered groups
+   - Aborts tasks for groups that no longer exist
+3. **Per-group loop**: Each task runs forever:
+   - Call `get_group_stats(group)` (uses low-priority queue, caches result)
+   - Sleep for 1 hour
+   - Repeat
+
+### Configuration
+
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `GROUP_STATS_REFRESH_INTERVAL_SECS` | 3600 | Interval between stats refreshes (1 hour) |

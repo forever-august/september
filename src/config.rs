@@ -188,6 +188,9 @@ pub const ACTIVITY_BUCKET_COUNT: u64 = 150;
 /// High request rate threshold (requests/second) for minimum refresh period
 pub const ACTIVITY_HIGH_RPS: f64 = 10000.0;
 
+/// Interval between group stats background refreshes (1 hour)
+pub const GROUP_STATS_REFRESH_INTERVAL_SECS: u64 = 3600;
+
 // =============================================================================
 // Default Paths and Strings
 // =============================================================================

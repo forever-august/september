@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use chrono::DateTime;
 use moka::future::Cache;
 use tokio::sync::{broadcast, RwLock};
+use tokio::task::JoinHandle;
 
 use tracing::instrument;
 
@@ -20,6 +21,7 @@ use crate::config::{
     NNTP_NEGATIVE_CACHE_TTL_SECS, THREAD_CACHE_MULTIPLIER, INCREMENTAL_DEBOUNCE_MS,
     BACKGROUND_REFRESH_MIN_PERIOD_SECS, BACKGROUND_REFRESH_MAX_PERIOD_SECS,
     ACTIVITY_WINDOW_SECS, ACTIVITY_BUCKET_COUNT, ACTIVITY_HIGH_RPS,
+    GROUP_STATS_REFRESH_INTERVAL_SECS,
 };
 use crate::error::AppError;
 
@@ -233,6 +235,10 @@ pub struct NntpFederatedService {
     /// Used for smart dispatch of group-specific requests
     group_servers: Arc<RwLock<HashMap<String, Vec<usize>>>>,
 
+    /// Maps group name -> server indices that allow posting
+    /// Updated during group fetch when POST capability is detected
+    posting_servers: Arc<RwLock<HashMap<String, Vec<usize>>>>,
+
     /// Pending group stats requests for coalescing at federated level
     pending_group_stats: Arc<RwLock<PendingGroupStats>>,
 
@@ -247,6 +253,9 @@ pub struct NntpFederatedService {
 
     /// Activity tracker for background refresh scheduling
     activity_tracker: Arc<RwLock<ActivityTracker>>,
+
+    /// Task handles for per-group stats refresh (for cleanup when groups are removed)
+    group_stats_tasks: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
 
     /// Maximum number of articles to fetch per group (from config)
     max_articles_per_group: u64,
@@ -317,11 +326,13 @@ impl NntpFederatedService {
             groups_cache,
             group_stats_cache,
             group_servers: Arc::new(RwLock::new(HashMap::new())),
+            posting_servers: Arc::new(RwLock::new(HashMap::new())),
             pending_group_stats: Arc::new(RwLock::new(HashMap::new())),
             group_hwm: Arc::new(RwLock::new(HashMap::new())),
             last_incremental_check: Arc::new(RwLock::new(HashMap::new())),
             pending_incremental: Arc::new(RwLock::new(HashMap::new())),
             activity_tracker: Arc::new(RwLock::new(ActivityTracker::new())),
+            group_stats_tasks: Arc::new(RwLock::new(HashMap::new())),
             max_articles_per_group,
         }
     }
@@ -648,6 +659,58 @@ impl NntpFederatedService {
             BACKGROUND_REFRESH_MAX_PERIOD_SECS
         );
         // Per-group refresh tasks are spawned on-demand in mark_group_active()
+
+        // Spawn hourly group stats refresh
+        self.spawn_group_stats_refresh();
+    }
+
+    /// Spawn a periodic task to refresh stats for a single group.
+    /// Runs forever, refreshing once per hour.
+    fn spawn_group_stats_refresh_task(&self, group: String) -> JoinHandle<()> {
+        let this = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let _ = this.get_group_stats(&group).await;
+                tokio::time::sleep(Duration::from_secs(GROUP_STATS_REFRESH_INTERVAL_SECS)).await;
+            }
+        })
+    }
+
+    /// Spawn background refresh coordinator for group stats.
+    /// Monitors for new/removed groups and manages per-group refresh tasks.
+    fn spawn_group_stats_refresh(self: Arc<Self>) {
+        tokio::spawn(async move {
+            loop {
+                if let Ok(groups) = self.get_groups().await {
+                    let current_names: HashSet<String> =
+                        groups.iter().map(|g| g.name.clone()).collect();
+
+                    let mut tasks = self.group_stats_tasks.write().await;
+
+                    // Abort tasks for removed groups
+                    tasks.retain(|name, handle| {
+                        if current_names.contains(name) {
+                            true
+                        } else {
+                            handle.abort();
+                            tracing::debug!(group = %name, "Stopped stats refresh for removed group");
+                            false
+                        }
+                    });
+
+                    // Spawn tasks for new groups
+                    for name in current_names {
+                        if !tasks.contains_key(&name) {
+                            tracing::debug!(group = %name, "Starting stats refresh for group");
+                            let handle = self.spawn_group_stats_refresh_task(name.clone());
+                            tasks.insert(name, handle);
+                        }
+                    }
+                }
+
+                tokio::time::sleep(Duration::from_secs(GROUP_STATS_REFRESH_INTERVAL_SECS)).await;
+            }
+        });
     }
 
     /// Fetch an article by message ID
@@ -1143,12 +1206,16 @@ impl NntpFederatedService {
         let mut all_groups: Vec<GroupView> = Vec::new();
         let mut seen_names: HashSet<String> = HashSet::new();
         let mut group_to_servers: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut posting_to_servers: HashMap<String, Vec<usize>> = HashMap::new();
         let mut any_success = false;
 
         for (server_idx, service) in self.services.iter().enumerate() {
             match service.get_groups().await {
                 Ok(groups) => {
                     any_success = true;
+                    let server_allows_posting = service.is_posting_allowed();
+                    let group_count = groups.len();
+                    
                     for group in groups {
                         // Track which servers carry this group
                         group_to_servers
@@ -1156,11 +1223,26 @@ impl NntpFederatedService {
                             .or_default()
                             .push(server_idx);
 
+                        // Track which servers allow posting to this group
+                        if server_allows_posting {
+                            posting_to_servers
+                                .entry(group.name.clone())
+                                .or_default()
+                                .push(server_idx);
+                        }
+
                         // Add to all_groups if first time seeing this group
                         if seen_names.insert(group.name.clone()) {
                             all_groups.push(group);
                         }
                     }
+                    
+                    tracing::debug!(
+                        server = %service.name(),
+                        posting_allowed = server_allows_posting,
+                        group_count,
+                        "Fetched groups from server"
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1179,6 +1261,16 @@ impl NntpFederatedService {
 
         // Update group-server mapping atomically
         *self.group_servers.write().await = group_to_servers;
+        
+        // Update posting servers mapping
+        let posting_server_count = posting_to_servers.len();
+        *self.posting_servers.write().await = posting_to_servers;
+        
+        tracing::info!(
+            total_groups = all_groups.len(),
+            groups_with_posting = posting_server_count,
+            "Group list updated"
+        );
 
         // Sort by name
         all_groups.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1324,5 +1416,85 @@ impl NntpFederatedService {
             }
         }
         counts
+    }
+
+    /// Check if posting is allowed for a group
+    /// Returns true if at least one server carries this group
+    /// (actual POST capability is checked at post time)
+    pub async fn can_post_to_group(&self, group: &str) -> bool {
+        // First check if we have explicit posting servers
+        let posting = self.posting_servers.read().await;
+        if posting.get(group).map(|v| !v.is_empty()).unwrap_or(false) {
+            return true;
+        }
+        drop(posting);
+        
+        // Fall back to checking if any server carries this group
+        let servers = self.group_servers.read().await;
+        servers.get(group).map(|v| !v.is_empty()).unwrap_or(false)
+    }
+
+    /// Post a new article or reply
+    /// Tries servers that support posting to the target group
+    #[instrument(
+        name = "nntp.federated.post_article",
+        skip(self, headers, body),
+        fields(duration_ms)
+    )]
+    pub async fn post_article(
+        &self,
+        group: &str,
+        headers: Vec<(String, String)>,
+        body: String,
+    ) -> Result<(), AppError> {
+        let start = Instant::now();
+        
+        // Get servers that support posting to this group
+        let server_indices = {
+            let servers = self.posting_servers.read().await;
+            servers.get(group).cloned().unwrap_or_default()
+        };
+        
+        // If no posting servers known, fall back to all servers for this group
+        let server_indices = if server_indices.is_empty() {
+            self.get_servers_for_group(group).await
+        } else {
+            server_indices
+        };
+        
+        if server_indices.is_empty() {
+            return Err(AppError::Internal("No servers support posting to this group".into()));
+        }
+        
+        // Try each server that supports posting
+        let mut last_error = None;
+        for idx in server_indices {
+            let service = &self.services[idx];
+            match service.post_article(headers.clone(), body.clone()).await {
+                Ok(()) => {
+                    tracing::info!(
+                        group = %group,
+                        server = %service.name(),
+                        "Article posted successfully"
+                    );
+                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        group = %group,
+                        server = %service.name(),
+                        error = %e,
+                        "Failed to post article, trying next server"
+                    );
+                    last_error = Some(e);
+                }
+            }
+        }
+        
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+        Err(last_error
+            .map(|e| AppError::Internal(format!("Failed to post article: {}", e.0)))
+            .unwrap_or_else(|| AppError::Internal("Failed to post article".into())))
     }
 }
