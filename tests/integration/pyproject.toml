@@ -10,6 +10,14 @@ dependencies = [
     "requests>=2.32",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+    "selenium>=4.25",
+    "requests>=2.32",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["."]
 python_files = ["test_*.py"]
@@ -23,11 +31,3 @@ markers = [
 addopts = "-v --tb=short"
 # Per-test timeout in seconds (fails test if exceeded)
 timeout = 30
-
-[tool.uv]
-dev-dependencies = [
-    "pytest>=8.0",
-    "pytest-timeout>=2.3",
-    "selenium>=4.25",
-    "requests>=2.32",
-]

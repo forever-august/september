@@ -36,7 +36,17 @@ from helpers import (
     TIMEOUT_OIDC,
     Selectors,
 )
-from testlogging import TestLogCapture, fetch_service_logs, format_failure_report
+from testlogging import (
+    PerformanceReport,
+    RouteTiming,
+    TestLogCapture,
+    clear_performance_entries,
+    fetch_service_logs,
+    format_failure_report,
+    format_performance_report,
+    get_navigation_timing,
+    get_resource_timings,
+)
 from pages import (
     ArticlePage,
     BrowsePage,
@@ -53,47 +63,101 @@ PERF_REPORT_MODE = os.environ.get("PERF_REPORT", "none")
 
 
 # =============================================================================
-# Pytest Hooks for Log Capture
+# Pytest Configuration
 # =============================================================================
 
 
-@pytest.fixture(autouse=True)
-def capture_logs_on_failure(request) -> Generator[TestLogCapture, None, None]:
-    """Automatically capture logs during test execution for failure analysis."""
-    capture = TestLogCapture(
-        test_name=request.node.name,
-        start_time=datetime.now(timezone.utc),
+def pytest_addoption(parser):
+    """Add custom command-line options."""
+    parser.addoption(
+        "--repeat",
+        action="store",
+        default=1,
+        type=int,
+        help="Number of times to repeat each test for performance statistics",
     )
 
-    yield capture
 
-    capture.end_time = datetime.now(timezone.utc)
+def pytest_generate_tests(metafunc):
+    """Parametrize tests to run multiple times when --repeat is specified."""
+    count = metafunc.config.getoption("--repeat")
+    if count > 1:
+        # Add a fixture that provides the iteration number
+        metafunc.fixturenames.append("_repeat_iteration")
+        metafunc.parametrize(
+            "_repeat_iteration", range(count), ids=[f"run{i}" for i in range(count)]
+        )
 
-    # Check test result
-    test_failed = hasattr(request.node, "rep_call") and request.node.rep_call.failed
 
-    # Only fetch logs and generate report on failure
-    if test_failed:
-        # Fetch logs from all services
-        for service in LOG_SERVICES:
-            service_logs = fetch_service_logs(service, capture.start_time)
-            capture.logs.extend(service_logs)
+# =============================================================================
+# Pytest Hooks for Log Capture and Performance Tracking
+# =============================================================================
 
-        exc_info = request.node.rep_call.longrepr
-        exception = None
-        if hasattr(exc_info, "reprcrash"):
-            exception = Exception(exc_info.reprcrash.message)
+# Global performance report for the session
+_performance_report: PerformanceReport | None = None
+# Current test name for attribution
+_current_test_name: str = ""
+# Reference to browser for performance capture
+_session_browser: WebDriver | None = None
 
-        report = format_failure_report(capture, exception)
-        print(report)
+
+def pytest_sessionstart(session):
+    """Initialize performance tracking at the start of the test session."""
+    global _performance_report
+    _performance_report = PerformanceReport(session_start=datetime.now(timezone.utc))
+
+
+def pytest_runtest_setup(item):
+    """Record current test name for route timing attribution."""
+    global _current_test_name
+    _current_test_name = item.name
 
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """Store test result on the item for access in fixtures."""
+    """Store test result on the item and capture route timings after test execution."""
+    global _performance_report, _current_test_name, _session_browser
+
     outcome = yield
     rep = outcome.get_result()
     setattr(item, f"rep_{rep.when}", rep)
+
+    # Capture route timings after the call phase (actual test execution)
+    if (
+        rep.when == "call"
+        and _session_browser is not None
+        and _performance_report is not None
+    ):
+        try:
+            # Capture navigation timing for the current page
+            nav_timing = get_navigation_timing(_session_browser, _current_test_name)
+            if nav_timing:
+                _performance_report.route_timings.append(nav_timing)
+
+            # Capture resource timings (XHR, fetch, etc.)
+            resource_timings = get_resource_timings(
+                _session_browser, _current_test_name
+            )
+            _performance_report.route_timings.extend(resource_timings)
+
+            # Clear entries to avoid duplicates in next test
+            clear_performance_entries(_session_browser)
+        except Exception:
+            pass  # Don't fail tests due to performance capture issues
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Print the performance report at the end of the test session."""
+    global _performance_report
+    if _performance_report is not None and _performance_report.route_timings:
+        _performance_report.session_end = datetime.now(timezone.utc)
+        report = format_performance_report(_performance_report)
+        # Use terminal writer if available for proper output
+        if hasattr(session.config, "_tw"):
+            session.config._tw.write(report)
+            session.config._tw.write("\n")
+        else:
+            print(report)
 
 
 # =============================================================================
@@ -112,6 +176,8 @@ def browser() -> Generator[WebDriver, None, None]:
     Note: Docker environment must be started before running tests.
     Use ./test.sh to run tests with automatic environment setup.
     """
+    global _session_browser
+
     options = webdriver.ChromeOptions()
     # Recommended options for containerized Chrome
     options.add_argument("--no-sandbox")
@@ -126,8 +192,15 @@ def browser() -> Generator[WebDriver, None, None]:
     # Use a short implicit wait - explicit waits handle specific timing needs
     driver.implicitly_wait(1)
 
+    # Disable browser cache for accurate performance measurements
+    driver.execute_cdp_cmd("Network.setCacheDisabled", {"cacheDisabled": True})
+
+    # Store reference for performance capture
+    _session_browser = driver
+
     yield driver
 
+    _session_browser = None
     driver.quit()
 
 

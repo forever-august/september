@@ -1,6 +1,6 @@
 """Failure analysis and reporting utilities."""
 
-from .models import LogEntry, TestLogCapture
+from .models import LogEntry, PerformanceReport, TestLogCapture
 
 
 def analyze_failure(capture: TestLogCapture, exception: BaseException | None) -> dict:
@@ -150,6 +150,74 @@ def format_failure_report(
             lines.append(f"[{log.service}] {ts_str} {log.level}: {log.message[:200]}")
         if len(error_logs) > 10:
             lines.append(f"  ... and {len(error_logs) - 10} more error logs")
+        lines.append("")
+
+    lines.append("=" * 80)
+
+    return "\n".join(lines)
+
+
+def _truncate_middle(text: str, max_len: int) -> str:
+    """Truncate text in the middle if too long, preserving start and end."""
+    if len(text) <= max_len:
+        return text
+    # Keep roughly equal parts from start and end
+    keep = (max_len - 3) // 2
+    return text[:keep] + "..." + text[-(max_len - keep - 3) :]
+
+
+def format_performance_report(report: PerformanceReport) -> str:
+    """Format a performance report for September route timings."""
+    lines = [
+        "",
+        "=" * 80,
+        "ROUTE PERFORMANCE REPORT",
+        "=" * 80,
+        "",
+    ]
+
+    # Summary statistics
+    lines.append("Summary")
+    lines.append("-" * 40)
+    lines.append(f"  Total requests:      {report.total_requests}")
+    lines.append(f"  Total route time:    {report.total_route_time_ms:.0f}ms")
+    lines.append(f"  Session duration:    {report.total_duration_seconds:.2f}s")
+    lines.append("")
+
+    # Per-route breakdown (aggregated stats by pattern)
+    route_stats = report.get_route_stats()
+    if route_stats:
+        lines.append("Routes by Total Time")
+        lines.append("-" * 40)
+        lines.append(
+            f"  {'Route':<30} {'Count':>6} {'Avg':>8} {'Min':>8} {'Max':>8} {'Total':>8}"
+        )
+        lines.append(f"  {'-' * 30} {'-' * 6} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 8}")
+
+        for stats in route_stats[:15]:  # Top 15 route patterns
+            pattern_display = stats.pattern
+            if len(pattern_display) > 30:
+                pattern_display = _truncate_middle(pattern_display, 30)
+            lines.append(
+                f"  {pattern_display:<30} {stats.count:>6} "
+                f"{stats.avg_ms:>7.0f}ms {stats.min_ms:>7.0f}ms "
+                f"{stats.max_ms:>7.0f}ms {stats.total_ms:>7.0f}ms"
+            )
+        lines.append("")
+
+    # Slowest individual requests
+    slowest = report.get_slowest_requests(10)
+    if slowest:
+        lines.append("Slowest Individual Requests")
+        lines.append("-" * 40)
+        for i, timing in enumerate(slowest, 1):
+            route_display = timing.route
+            if len(route_display) > 50:
+                route_display = _truncate_middle(route_display, 50)
+            lines.append(f"  {i:2}. {timing.duration_ms:>7.0f}ms  {route_display}")
+            lines.append(
+                f"      (TTFB: {timing.ttfb_ms:.0f}ms, test: {timing.test_name})"
+            )
         lines.append("")
 
     lines.append("=" * 80)
