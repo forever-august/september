@@ -1,13 +1,20 @@
 #!/bin/bash
 # Teardown script for September integration test environment
 #
-# This script stops all Docker services and removes volumes.
-# Run from anywhere - it will cd to the correct directory.
+# Usage: ./teardown.sh
+#
+# This script is idempotent - safe to run even if nothing is running.
 
 set -e
 
-# Change to the directory containing this script
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Check if any containers exist for this compose project
+if ! docker compose ps -q 2>/dev/null | grep -q .; then
+    echo "No containers running, nothing to tear down."
+    exit 0
+fi
 
 echo "Stopping integration test environment..."
 

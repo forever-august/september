@@ -20,6 +20,9 @@ name = "test"
 host = "nntp"
 port = 119
 worker_count = 2
+username = "testposter"
+password = "testpassword"
+allow_insecure_auth = true  # Allow plaintext auth in test environment
 
 [ui]
 site_name = "September Test"

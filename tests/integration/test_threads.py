@@ -9,165 +9,100 @@ These tests verify:
 - Thread hierarchy (replies) displays correctly
 """
 
-import pytest
-from selenium.webdriver.common.by import By
-from selenium.webdriver.remote.webdriver import WebDriver
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from typing import Callable
 
-from conftest import SEPTEMBER_URL, WAIT_TIMEOUT_DEFAULT, WAIT_TIMEOUT_POLL
+from pages import GroupPage
 
 
 class TestThreadList:
     """Tests for the thread list page (/g/{group})."""
 
-    def test_thread_list_loads(self, browser: WebDriver):
+    def test_thread_list_loads(self, group_page: Callable[[str], GroupPage]):
         """Thread list page should load for a valid group."""
-        browser.get(f"{SEPTEMBER_URL}/g/test.general")
-
-        # SSR: elements available immediately
+        page = group_page("test.general")
         # Should have a thread list or empty state
-        thread_list = browser.find_elements(By.CLASS_NAME, "thread-list")
-        empty_state = browser.find_elements(By.CLASS_NAME, "empty-state")
-        assert len(thread_list) > 0 or len(empty_state) > 0
+        assert page.has_thread_list() or page.has_empty_state()
+        assert page.is_group_in_title()
 
-        # Page title should include group name
-        assert "test.general" in browser.title or "test.general" in browser.page_source
-
-    def test_thread_list_shows_threads(self, browser: WebDriver):
+    def test_thread_list_shows_threads(self, group_page: Callable[[str], GroupPage]):
         """Thread list should display seeded threads."""
-        browser.get(f"{SEPTEMBER_URL}/g/test.general")
+        page = group_page("test.general")
+        assert page.has_threads(), "Expected seeded threads to appear"
 
-        # SSR: thread list rendered server-side
-        thread_list = browser.find_element(By.CLASS_NAME, "thread-list")
-        threads = thread_list.find_elements(
-            By.CSS_SELECTOR, ".thread-card, .thread-card-link"
-        )
-        assert len(threads) > 0, "Expected seeded threads to appear"
-
-    def test_thread_has_subject(self, browser: WebDriver):
+    def test_thread_has_subject(self, group_page: Callable[[str], GroupPage]):
         """Each thread should display a subject line."""
-        browser.get(f"{SEPTEMBER_URL}/g/test.general")
+        page = group_page("test.general")
+        titles = page.get_thread_titles()
+        assert len(titles) > 0, "Expected threads to have subject text"
 
-        subjects = browser.find_elements(
-            By.CSS_SELECTOR, ".thread-title, .thread-card-link"
-        )
-
-        if len(subjects) > 0:
-            subject_texts = [s.text for s in subjects if s.text.strip()]
-            assert len(subject_texts) > 0, "Expected threads to have subject text"
-
-    def test_thread_has_author(self, browser: WebDriver):
+    def test_thread_has_author(self, group_page: Callable[[str], GroupPage]):
         """Threads should display author information."""
-        browser.get(f"{SEPTEMBER_URL}/g/test.general")
+        page = group_page("test.general")
+        assert page.has_thread_list()
 
-        # Just verify the page loaded correctly
-        assert browser.find_element(By.CLASS_NAME, "thread-list")
-
-    def test_click_thread_opens_view(self, browser: WebDriver):
+    def test_click_thread_opens_view(self, group_page: Callable[[str], GroupPage]):
         """Clicking a thread should navigate to the thread view."""
-        browser.get(f"{SEPTEMBER_URL}/g/test.general")
-
-        thread_links = browser.find_elements(By.CSS_SELECTOR, ".thread-card-link")
-
-        if len(thread_links) > 0:
-            thread_links[0].click()
-
-            # Wait for navigation (click triggers page load)
-            wait = WebDriverWait(
-                browser, WAIT_TIMEOUT_DEFAULT, poll_frequency=WAIT_TIMEOUT_POLL
-            )
-            wait.until(EC.url_contains("/a/"))
-
-            # SSR: new page elements available immediately after navigation
-            assert browser.find_element(By.TAG_NAME, "main")
+        page = group_page("test.general")
+        thread_page = page.click_first_thread()
+        assert thread_page.has_main_content()
 
 
 class TestThreadView:
     """Tests for the thread view page (/g/{group}/thread/{message_id})."""
 
-    def test_thread_view_loads(self, browser: WebDriver):
+    def test_thread_view_loads(self, group_page: Callable[[str], GroupPage]):
         """Thread view should load when navigating from thread list."""
-        browser.get(f"{SEPTEMBER_URL}/g/test.development")
+        page = group_page("test.development")
+        thread_page = page.click_first_thread()
+        assert thread_page.has_main_content()
 
-        # Wait for thread list to ensure page is loaded
-        wait = WebDriverWait(
-            browser, WAIT_TIMEOUT_DEFAULT, poll_frequency=WAIT_TIMEOUT_POLL
-        )
-        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "thread-list")))
-
-        thread_links = browser.find_elements(By.CSS_SELECTOR, ".thread-card-link")
-
-        if len(thread_links) > 0:
-            thread_links[0].click()
-
-            # Wait for navigation - URL contains /a/ or /thread/
-            wait.until(lambda d: "/a/" in d.current_url or "/thread/" in d.current_url)
-
-            # SSR: content available immediately
-            assert browser.find_element(By.TAG_NAME, "main")
-
-    def test_thread_view_shows_articles(self, browser: WebDriver):
+    def test_thread_view_shows_articles(self, group_page: Callable[[str], GroupPage]):
         """Thread view should display the articles in the thread."""
-        browser.get(f"{SEPTEMBER_URL}/g/test.development")
-
-        # Wait for thread list to ensure page is loaded
-        wait = WebDriverWait(
-            browser, WAIT_TIMEOUT_DEFAULT, poll_frequency=WAIT_TIMEOUT_POLL
+        page = group_page("test.development")
+        thread_page = page.click_first_thread()
+        assert thread_page.get_article_count() >= 1, (
+            "Expected at least one article in thread"
         )
-        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "thread-list")))
 
-        thread_links = browser.find_elements(By.CSS_SELECTOR, ".thread-card-link")
-
-        if len(thread_links) > 0:
-            thread_links[0].click()
-
-            # Wait for navigation - URL contains /a/ or /thread/
-            wait.until(lambda d: "/a/" in d.current_url or "/thread/" in d.current_url)
-
-            # SSR: articles rendered server-side
-            articles = browser.find_elements(
-                By.CSS_SELECTOR, ".comment, .article-content"
-            )
-            assert len(articles) >= 1, "Expected at least one article in thread"
-
-    def test_thread_view_has_reply_button(self, browser: WebDriver):
+    def test_thread_view_has_reply_button(self, group_page: Callable[[str], GroupPage]):
         """Thread view should have a reply button (when authenticated)."""
-        browser.get(f"{SEPTEMBER_URL}/g/test.general")
-
-        thread_links = browser.find_elements(By.CSS_SELECTOR, ".thread-card-link")
-
-        if len(thread_links) > 0:
-            thread_links[0].click()
-
-            wait = WebDriverWait(
-                browser, WAIT_TIMEOUT_DEFAULT, poll_frequency=WAIT_TIMEOUT_POLL
-            )
-            wait.until(EC.url_contains("/a/"))
-
-            # Just verify the page loads correctly
-            assert browser.find_element(By.TAG_NAME, "main")
+        page = group_page("test.general")
+        thread_page = page.click_first_thread()
+        # Just verify the page loads correctly
+        assert thread_page.has_main_content()
 
 
 class TestPagination:
     """Tests for pagination in thread lists."""
 
-    def test_pagination_present_when_needed(self, browser: WebDriver):
+    def test_pagination_present_when_needed(
+        self, group_page: Callable[[str], GroupPage]
+    ):
         """Pagination should appear when there are enough threads."""
-        browser.get(f"{SEPTEMBER_URL}/g/test.development")
-
-        # SSR: pagination rendered server-side if present
+        page = group_page("test.development")
         # Just verify the page is functional
-        assert browser.find_element(By.TAG_NAME, "main")
+        assert page.has_main_content()
 
 
 class TestGroupNotFound:
     """Tests for error handling with invalid groups."""
 
-    def test_invalid_group_shows_error(self, browser: WebDriver):
+    def test_invalid_group_shows_error(self, group_page: Callable[[str], GroupPage]):
         """Requesting an invalid group should show an error or empty state."""
-        browser.get(f"{SEPTEMBER_URL}/g/nonexistent.group.name")
+        # This will raise PageLoadError if neither thread list nor empty state is present
+        # For an invalid group, we expect the page to still load (with error content)
+        from helpers.exceptions import PageLoadError
+        from pages import GroupPage as GP
+        from selenium.webdriver.remote.webdriver import WebDriver
 
-        # SSR: error page rendered server-side
-        assert browser.find_element(By.TAG_NAME, "main")
-        assert browser.find_element(By.TAG_NAME, "body")
+        # Get the browser from the fixture by calling with a valid group first
+        page = group_page("test.general")
+        driver = page.driver
+
+        # Navigate to invalid group directly
+        invalid_page = GP(driver, "nonexistent.group.name")
+        invalid_page.driver.get(f"{invalid_page.base_url}/g/nonexistent.group.name")
+
+        # Page should still have basic structure
+        assert invalid_page.has_main_content()
+        assert invalid_page.has_body()

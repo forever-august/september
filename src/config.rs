@@ -292,10 +292,13 @@ pub struct NntpServerConfig {
     pub request_timeout_seconds: Option<u64>,
     /// Number of worker connections for this server (default: 4)
     pub worker_count: Option<usize>,
-    /// Username for NNTP authentication (requires TLS)
+    /// Username for NNTP authentication (requires TLS unless allow_insecure_auth is set)
     pub username: Option<String>,
-    /// Password for NNTP authentication (requires TLS)
+    /// Password for NNTP authentication (requires TLS unless allow_insecure_auth is set)
     pub password: Option<String>,
+    /// Allow authentication over plaintext connections (INSECURE - only for testing)
+    #[serde(default)]
+    pub allow_insecure_auth: bool,
 }
 
 impl NntpServerConfig {
@@ -319,6 +322,12 @@ impl NntpServerConfig {
         self.username.is_some() && self.password.is_some()
     }
 
+    /// Check if TLS is required for credentials
+    /// Returns true if credentials are configured AND allow_insecure_auth is false
+    pub fn requires_tls_for_credentials(&self) -> bool {
+        self.has_credentials() && !self.allow_insecure_auth
+    }
+
     /// Create from legacy NntpSettings (backward compatibility)
     fn from_legacy(settings: &NntpSettings) -> Option<Self> {
         let server = settings.legacy_server.as_ref()?;
@@ -333,6 +342,7 @@ impl NntpServerConfig {
             worker_count: settings.legacy_worker_count,
             username: settings.legacy_username.clone(),
             password: settings.legacy_password.clone(),
+            allow_insecure_auth: false,
         })
     }
 }

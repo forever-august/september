@@ -277,9 +277,10 @@ impl NntpWorker {
                 self.server_config.timeout_seconds(&self.global_settings)
             );
             let has_credentials = self.server_config.has_credentials();
+            let requires_tls = self.server_config.requires_tls_for_credentials();
 
-            // Set TLS requirement flag (credentials require TLS)
-            super::tls::set_tls_required(has_credentials);
+            // Set TLS requirement flag (credentials require TLS unless allow_insecure_auth is set)
+            super::tls::set_tls_required(requires_tls);
 
             // Connect using NntpClient with our TLS-aware NntpStream
             let mut client = match timeout(connect_timeout, NntpClient::<NntpStream>::connect(&addr)).await {
@@ -301,8 +302,11 @@ impl NntpWorker {
             };
 
             // Authenticate if credentials are configured
-            // (safe because credentials require TLS, which was enforced during connect)
+            // Note: TLS is enforced during connect unless allow_insecure_auth is set
             if has_credentials {
+                if !requires_tls {
+                    tracing::warn!("Authenticating over plaintext connection (allow_insecure_auth is set)");
+                }
                 let username = self.server_config.username.as_ref().unwrap();
                 let password = self.server_config.password.as_ref().unwrap();
 

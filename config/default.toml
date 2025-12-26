@@ -18,6 +18,10 @@ articles_per_page = 20
 #host = "olduse.net"
 #port = 11940
 #worker_count = 4
+# Optional authentication (requires TLS unless allow_insecure_auth = true)
+#username = "myuser"
+#password = "mypassword"
+# allow_insecure_auth = false  # DANGER: allows plaintext auth (testing only)
 
 # Uncomment to add additional servers for fallback
 [[server]]

@@ -12,43 +12,31 @@ These tests verify:
 import pytest
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
 
-from conftest import (
+from helpers import (
     SEPTEMBER_URL,
     TEST_USER_EMAIL,
     TEST_USER_PASSWORD,
-    WAIT_TIMEOUT_DEFAULT,
-    WAIT_TIMEOUT_OIDC,
-    WAIT_TIMEOUT_POLL,
+    Selectors,
+    create_wait,
 )
+from pages import DexLoginPage
 
 
 class TestLoginPage:
     """Tests for the login page."""
 
-    def test_login_page_loads(self, browser: WebDriver):
+    def test_login_page_loads(self, browser: WebDriver, dex_page: DexLoginPage):
         """Login page should load and show login options."""
         browser.get(f"{SEPTEMBER_URL}/auth/login")
-
-        # Wait for redirect to Dex (external service, not SSR)
-        wait = WebDriverWait(
-            browser, WAIT_TIMEOUT_OIDC, poll_frequency=WAIT_TIMEOUT_POLL
-        )
-        wait.until(
-            lambda d: "dex" in d.current_url.lower() or "login" in d.current_url.lower()
-        )
-
-        assert browser.find_element(By.TAG_NAME, "body")
+        dex_page.wait_for_dex()
+        assert dex_page.has_body()
 
     def test_login_link_in_header(self, clean_browser: WebDriver):
         """Unauthenticated users should see a login link in the header."""
         clean_browser.get(f"{SEPTEMBER_URL}/")
-
-        # SSR: header rendered server-side
-        header = clean_browser.find_element(By.CSS_SELECTOR, "header, .site-header")
+        # Header rendered server-side
+        header = clean_browser.find_element(By.CSS_SELECTOR, Selectors.Layout.HEADER)
         assert header is not None
 
 
@@ -56,89 +44,38 @@ class TestLoginFlow:
     """Tests for the complete OIDC login flow."""
 
     @pytest.mark.auth
-    def test_complete_login_flow(self, clean_browser: WebDriver):
+    def test_complete_login_flow(
+        self, clean_browser: WebDriver, dex_page: DexLoginPage
+    ):
         """Should be able to log in via Dex OIDC provider."""
-        browser = clean_browser
+        clean_browser.get(f"{SEPTEMBER_URL}/auth/login")
 
-        browser.get(f"{SEPTEMBER_URL}/auth/login")
-
-        # Dex is external - need to wait for redirect
-        wait = WebDriverWait(
-            browser, WAIT_TIMEOUT_OIDC, poll_frequency=WAIT_TIMEOUT_POLL
-        )
-        quick_wait = WebDriverWait(browser, 1, poll_frequency=WAIT_TIMEOUT_POLL)
-
-        wait.until(
-            lambda d: "dex" in d.current_url.lower() or "login" in d.page_source.lower()
-        )
-
-        # Dex may show connector selection (quick check)
         try:
-            email_link = quick_wait.until(
-                EC.element_to_be_clickable((By.LINK_TEXT, "Log in with Email"))
+            dex_page.login(TEST_USER_EMAIL, TEST_USER_PASSWORD)
+
+            # Check for logged-in state
+            logged_in = clean_browser.find_elements(
+                By.CSS_SELECTOR, Selectors.Auth.LOGGED_IN_INDICATORS
             )
-            email_link.click()
-        except TimeoutException:
-            pass
-
-        # Fill in credentials on Dex form
-        try:
-            email_input = wait.until(EC.presence_of_element_located((By.NAME, "login")))
-            email_input.clear()
-            email_input.send_keys(TEST_USER_EMAIL)
-
-            password_input = browser.find_element(By.NAME, "password")
-            password_input.clear()
-            password_input.send_keys(TEST_USER_PASSWORD)
-
-            browser.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
-
-            # Wait for redirect back to September
-            wait.until(EC.url_contains(SEPTEMBER_URL.replace("http://", "")))
-
-            # SSR: logged-in state rendered server-side
-            logout_elements = browser.find_elements(
-                By.CSS_SELECTOR, ".user-info, [href*='logout'], form[action*='logout']"
-            )
-            assert len(logout_elements) > 0
-
-        except TimeoutException:
-            page_source = browser.page_source.lower()
-            if "error" in page_source or "invalid" in page_source:
+            assert len(logged_in) > 0
+        except Exception:
+            if dex_page.has_login_error():
                 pytest.skip("Login failed - may need to check Dex configuration")
             raise
 
     @pytest.mark.auth
-    def test_login_with_return_to(self, clean_browser: WebDriver):
+    def test_login_with_return_to(
+        self, clean_browser: WebDriver, dex_page: DexLoginPage
+    ):
         """Login should redirect to return_to URL after success."""
-        browser = clean_browser
-
         return_path = "/g/test.general"
-        browser.get(f"{SEPTEMBER_URL}/auth/login?return_to={return_path}")
-
-        wait = WebDriverWait(
-            browser, WAIT_TIMEOUT_OIDC, poll_frequency=WAIT_TIMEOUT_POLL
-        )
+        clean_browser.get(f"{SEPTEMBER_URL}/auth/login?return_to={return_path}")
 
         try:
-            wait.until(lambda d: "dex" in d.current_url.lower())
-
-            # Quick check for connector selection
-            try:
-                email_link = browser.find_element(By.LINK_TEXT, "Log in with Email")
-                email_link.click()
-            except Exception:
-                pass
-
-            email_input = wait.until(EC.presence_of_element_located((By.NAME, "login")))
-            email_input.send_keys(TEST_USER_EMAIL)
-            browser.find_element(By.NAME, "password").send_keys(TEST_USER_PASSWORD)
-            browser.find_element(By.CSS_SELECTOR, "button[type='submit']").click()
-
+            dex_page.login(TEST_USER_EMAIL, TEST_USER_PASSWORD)
             # Should redirect to the return_to path
-            wait.until(EC.url_contains(return_path))
-
-        except TimeoutException:
+            assert return_path in clean_browser.current_url
+        except Exception:
             pytest.skip("Login flow failed - skipping return_to test")
 
 
@@ -151,26 +88,26 @@ class TestLogout:
         browser = authenticated_browser
 
         # Find and click logout
-        logout_form = browser.find_elements(By.CSS_SELECTOR, "form[action*='logout']")
-        logout_links = browser.find_elements(By.CSS_SELECTOR, "a[href*='logout']")
+        logout_forms = browser.find_elements(
+            By.CSS_SELECTOR, Selectors.Auth.LOGOUT_FORM
+        )
+        logout_links = browser.find_elements(
+            By.CSS_SELECTOR, Selectors.Auth.LOGOUT_LINK
+        )
 
-        if len(logout_form) > 0:
-            logout_form[0].submit()
-        elif len(logout_links) > 0:
+        if logout_forms:
+            logout_forms[0].submit()
+        elif logout_links:
             logout_links[0].click()
         else:
             browser.get(f"{SEPTEMBER_URL}/auth/logout")
 
-        # Wait for redirect after logout
-        wait = WebDriverWait(
-            browser, WAIT_TIMEOUT_DEFAULT, poll_frequency=WAIT_TIMEOUT_POLL
-        )
-        wait.until(EC.url_contains(SEPTEMBER_URL.replace("http://", "")))
+        # Wait for redirect after logout and verify
+        wait = create_wait(browser)
+        wait.until(lambda d: SEPTEMBER_URL.replace("http://", "") in d.current_url)
 
-        # Verify logged out - go to home and check for login link
+        # Verify logged out - go to home
         browser.get(f"{SEPTEMBER_URL}/")
-
-        # SSR: login state rendered server-side
         assert browser.find_element(By.TAG_NAME, "body")
 
 
@@ -184,13 +121,10 @@ class TestSessionPersistence:
 
         # Navigate to home
         browser.get(f"{SEPTEMBER_URL}/")
-
-        # SSR: check for logged-in state
-        header = browser.find_element(By.CSS_SELECTOR, "header, .site-header")
+        header = browser.find_element(By.CSS_SELECTOR, Selectors.Layout.HEADER)
         assert header is not None
 
         # Navigate to a group
         browser.get(f"{SEPTEMBER_URL}/g/test.general")
-
-        # Still on September and page loads
-        assert browser.find_element(By.TAG_NAME, "body")
+        body = browser.find_element(By.TAG_NAME, "body")
+        assert body is not None

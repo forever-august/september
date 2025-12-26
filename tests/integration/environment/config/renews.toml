@@ -19,5 +19,8 @@ idle_timeout_secs = 300
 log_level = "debug"
 log_format = "json"
 
-# Allow anonymous posting without authentication (for integration testing)
-allow_anonymous_posting = true
+# Require authentication for posting
+allow_anonymous_posting = false
+
+# Allow authentication over plaintext connections (for integration testing only)
+allow_auth_insecure_connections = true

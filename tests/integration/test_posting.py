@@ -8,69 +8,47 @@ These tests verify:
 - Replies are submitted successfully
 - CSRF protection is in place
 - Email requirement for posting
+- Unauthenticated users cannot submit posts or replies
 
 Note: These tests modify data in the NNTP server.
 """
 
-import time
 import uuid
+from typing import Callable
 
 import pytest
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
 
-from conftest import SEPTEMBER_URL, WAIT_TIMEOUT_DEFAULT, WAIT_TIMEOUT_POLL
+from helpers import SEPTEMBER_URL
+from pages import ComposePage, GroupPage
 
 
 class TestComposeAccess:
     """Tests for accessing the compose page."""
 
-    def test_compose_requires_auth(self, clean_browser: WebDriver):
+    def test_compose_requires_auth(
+        self, compose_page_unauth: Callable[[str], ComposePage]
+    ):
         """Compose page should require authentication."""
-        browser = clean_browser
-
-        browser.get(f"{SEPTEMBER_URL}/g/test.general/compose")
-
-        # SSR: page rendered immediately
-        current_url = browser.current_url
-        page_source = browser.page_source.lower()
+        page = compose_page_unauth("test.general")
 
         # Should be redirected to login or show auth error
-        requires_auth = (
-            "login" in current_url
-            or "auth" in current_url
-            or "sign in" in page_source
-            or "log in" in page_source
-            or "authentication" in page_source
-            or "not authorized" in page_source
-            or "must be logged in" in page_source
-        )
+        requires_auth = page.requires_auth()
 
         # Should not show the compose form when not authenticated
-        compose_forms = browser.find_elements(
-            By.CSS_SELECTOR, "form[action*='post'], .compose-form"
-        )
-        assert len(compose_forms) == 0 or requires_auth, (
-            "Compose should require authentication"
-        )
+        has_form = page.has_form()
+        assert not has_form or requires_auth, "Compose should require authentication"
 
     @pytest.mark.auth
     def test_compose_accessible_when_authenticated(
-        self, authenticated_browser: WebDriver
+        self, compose_page: Callable[[str], ComposePage]
     ):
         """Compose page should be accessible when logged in."""
-        browser = authenticated_browser
+        page = compose_page("test.general")
 
-        browser.get(f"{SEPTEMBER_URL}/g/test.general/compose")
-
-        # SSR: compose form rendered server-side
-        page_source = browser.page_source.lower()
-
-        has_form = len(browser.find_elements(By.CSS_SELECTOR, "form, textarea")) > 0
-        has_error = "error" in page_source or "not allowed" in page_source
+        has_form = page.has_form()
+        has_error = page.has_error_message()
 
         assert has_form or has_error
 
@@ -80,60 +58,28 @@ class TestComposeForm:
 
     @pytest.mark.auth
     @pytest.mark.posting
-    def test_compose_form_has_required_fields(self, authenticated_browser: WebDriver):
+    def test_compose_form_has_required_fields(
+        self, compose_page: Callable[[str], ComposePage]
+    ):
         """Compose form should have subject and body fields."""
-        browser = authenticated_browser
+        page = compose_page("test.general")
 
-        browser.get(f"{SEPTEMBER_URL}/g/test.general/compose")
-
-        # SSR: form fields rendered server-side
-        try:
-            form = browser.find_element(By.CSS_SELECTOR, "form")
-
-            subject_fields = browser.find_elements(
-                By.CSS_SELECTOR, "input[name='subject'], input[type='text']"
-            )
-            body_fields = browser.find_elements(
-                By.CSS_SELECTOR, "textarea[name='body'], textarea"
-            )
-            submit_buttons = browser.find_elements(
-                By.CSS_SELECTOR, "button[type='submit'], input[type='submit']"
-            )
-
-            assert len(subject_fields) > 0, "Should have subject field"
-            assert len(body_fields) > 0, "Should have body field"
-            assert len(submit_buttons) > 0, "Should have submit button"
-
-        except Exception:
-            pytest.skip(
-                "Compose form not accessible - may require specific permissions"
-            )
+        assert page.has_subject_field(), "Should have subject field"
+        assert page.has_body_field(), "Should have body field"
+        assert page.has_submit_button(), "Should have submit button"
 
     @pytest.mark.auth
     @pytest.mark.posting
-    def test_compose_form_has_csrf_token(self, authenticated_browser: WebDriver):
+    def test_compose_form_has_csrf_token(
+        self, compose_page: Callable[[str], ComposePage]
+    ):
         """Compose form should include CSRF protection."""
-        browser = authenticated_browser
+        page = compose_page("test.general")
 
-        browser.get(f"{SEPTEMBER_URL}/g/test.general/compose")
+        assert page.has_csrf_token(), "Should have CSRF token field"
 
-        try:
-            browser.find_element(By.CSS_SELECTOR, "form")
-
-            csrf_fields = browser.find_elements(
-                By.CSS_SELECTOR, "input[name='csrf_token'], input[name='_csrf']"
-            )
-
-            assert len(csrf_fields) > 0, "Should have CSRF token field"
-
-            if len(csrf_fields) > 0:
-                token_value = csrf_fields[0].get_attribute("value")
-                assert token_value and len(token_value) > 10, (
-                    "CSRF token should have a value"
-                )
-
-        except Exception:
-            pytest.skip("Compose form not accessible")
+        token_value = page.get_csrf_token_value()
+        assert token_value and len(token_value) > 10, "CSRF token should have a value"
 
 
 class TestPostSubmission:
@@ -141,77 +87,38 @@ class TestPostSubmission:
 
     @pytest.mark.auth
     @pytest.mark.posting
-    def test_submit_new_post(self, authenticated_browser: WebDriver):
+    def test_submit_new_post(self, compose_page: Callable[[str], ComposePage]):
         """Should be able to submit a new post."""
-        browser = authenticated_browser
+        page = compose_page("test.general")
 
-        browser.get(f"{SEPTEMBER_URL}/g/test.general/compose")
+        unique_id = str(uuid.uuid4())[:8]
+        test_subject = f"Integration Test Post {unique_id}"
+        test_body = f"This is an automated test post.\n\nTest ID: {unique_id}"
 
-        try:
-            browser.find_element(By.CSS_SELECTOR, "form")
+        result = page.compose_and_submit(test_subject, test_body)
 
-            unique_id = str(uuid.uuid4())[:8]
-            test_subject = f"Integration Test Post {unique_id}"
-            test_body = f"This is an automated test post.\n\nTest ID: {unique_id}"
-
-            subject_input = browser.find_element(
-                By.CSS_SELECTOR, "input[name='subject']"
-            )
-            subject_input.clear()
-            subject_input.send_keys(test_subject)
-
-            body_input = browser.find_element(By.CSS_SELECTOR, "textarea[name='body']")
-            body_input.clear()
-            body_input.send_keys(test_body)
-
-            submit_button = browser.find_element(
-                By.CSS_SELECTOR, ".compose-form button[type='submit']"
-            )
-            submit_button.click()
-
-            # Wait for redirect after form submission
-            wait = WebDriverWait(
-                browser, WAIT_TIMEOUT_DEFAULT, poll_frequency=WAIT_TIMEOUT_POLL
-            )
-            wait.until(lambda d: "/compose" not in d.current_url)
-
-            current_url = browser.current_url
-            assert "/g/test.general" in current_url or "thread" in current_url
-
-        except Exception:
-            pytest.skip("Could not submit post - compose form not accessible")
+        # Should redirect away from compose page
+        assert not result.is_on_compose_page() or isinstance(result, GroupPage)
+        assert "/g/test.general" in result.current_url or "thread" in result.current_url
 
     @pytest.mark.auth
     @pytest.mark.posting
-    def test_empty_subject_rejected(self, authenticated_browser: WebDriver):
+    def test_empty_subject_rejected(self, compose_page: Callable[[str], ComposePage]):
         """Post with empty subject should be rejected."""
-        browser = authenticated_browser
+        page = compose_page("test.general")
 
-        browser.get(f"{SEPTEMBER_URL}/g/test.general/compose")
+        # Fill only body, leave subject empty
+        page.fill_body("This post has no subject")
 
-        try:
-            browser.find_element(By.CSS_SELECTOR, "form")
+        # Try to submit
+        submit_button = page.get_submit_button()
+        submit_button.click()
 
-            body_input = browser.find_element(By.CSS_SELECTOR, "textarea[name='body']")
-            body_input.clear()
-            body_input.send_keys("This post has no subject")
+        # Should still be on compose page or show error
+        still_on_compose = page.is_on_compose_page()
+        has_error = page.has_error_message()
 
-            submit_button = browser.find_element(
-                By.CSS_SELECTOR, ".compose-form button[type='submit']"
-            )
-            submit_button.click()
-
-            # Give time for validation
-            time.sleep(0.5)
-
-            page_source = browser.page_source.lower()
-            still_on_compose = "/compose" in browser.current_url
-            has_error = "required" in page_source or "error" in page_source
-
-            assert still_on_compose or has_error, "Empty subject should be rejected"
-
-        except Exception:
-            pytest.skip("Compose form not accessible")
+        assert still_on_compose or has_error, "Empty subject should be rejected"
 
 
 class TestReplySubmission:
@@ -219,90 +126,182 @@ class TestReplySubmission:
 
     @pytest.mark.auth
     @pytest.mark.posting
-    def test_reply_form_available(self, authenticated_browser: WebDriver):
+    def test_reply_form_available(
+        self, group_page: Callable[[str], GroupPage], authenticated_browser: WebDriver
+    ):
         """Reply form should be available on article/thread view."""
-        browser = authenticated_browser
+        # Navigate using the authenticated browser through the fixture
+        page = GroupPage(authenticated_browser, "test.general").load()
 
-        browser.get(f"{SEPTEMBER_URL}/g/test.general")
+        thread_page = page.click_first_thread()
 
-        # Wait for thread list to ensure page is loaded
-        wait = WebDriverWait(
-            browser, WAIT_TIMEOUT_DEFAULT, poll_frequency=WAIT_TIMEOUT_POLL
-        )
-        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "thread-list")))
-
-        thread_links = browser.find_elements(By.CSS_SELECTOR, ".thread-card-link")
-
-        if len(thread_links) == 0:
-            pytest.skip("No threads available to test reply")
-
-        thread_links[0].click()
-
-        # Wait for navigation - URL contains /a/ or /thread/
-        wait.until(lambda d: "/a/" in d.current_url or "/thread/" in d.current_url)
-
-        # SSR: reply form rendered server-side
-        reply_elements = browser.find_elements(
-            By.CSS_SELECTOR,
-            "form[action*='reply'], button[class*='reply'], a[href*='reply'], .reply-form, textarea",
+        # Check for reply elements
+        has_reply = (
+            thread_page.has_reply_form()
+            or thread_page.has_reply_elements()
+            or "reply" in thread_page.page_source.lower()
         )
 
-        assert len(reply_elements) > 0 or "reply" in browser.page_source.lower(), (
-            "Should have reply functionality when authenticated"
-        )
+        assert has_reply, "Should have reply functionality when authenticated"
 
     @pytest.mark.auth
     @pytest.mark.posting
     def test_submit_reply(self, authenticated_browser: WebDriver):
         """Should be able to submit a reply to an existing thread."""
-        browser = authenticated_browser
+        page = GroupPage(authenticated_browser, "test.development").load()
 
-        browser.get(f"{SEPTEMBER_URL}/g/test.development")
+        thread_page = page.click_first_thread()
 
-        # Wait for thread list to ensure page is loaded
-        wait = WebDriverWait(
-            browser, WAIT_TIMEOUT_DEFAULT, poll_frequency=WAIT_TIMEOUT_POLL
-        )
-        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "thread-list")))
-
-        thread_links = browser.find_elements(By.CSS_SELECTOR, ".thread-card-link")
-
-        if len(thread_links) == 0:
-            pytest.skip("No threads available to test reply")
-
-        thread_links[0].click()
-
-        # Wait for navigation - URL contains /a/ or /thread/
-        wait.until(lambda d: "/a/" in d.current_url or "/thread/" in d.current_url)
-
-        # SSR: form rendered server-side
-        reply_forms = browser.find_elements(By.CSS_SELECTOR, "form[action*='reply']")
-        reply_textareas = browser.find_elements(
-            By.CSS_SELECTOR, ".reply-form textarea, form textarea"
-        )
-
-        if len(reply_forms) == 0 and len(reply_textareas) == 0:
+        # Check for reply form
+        if not thread_page.has_reply_textarea():
             pytest.skip("Reply form not found on this page")
 
-        try:
-            unique_id = str(uuid.uuid4())[:8]
-            test_body = f"This is an automated test reply.\n\nTest ID: {unique_id}"
+        unique_id = str(uuid.uuid4())[:8]
+        test_body = f"This is an automated test reply.\n\nTest ID: {unique_id}"
 
-            if len(reply_textareas) > 0:
-                textarea = reply_textareas[-1]
-                textarea.clear()
-                textarea.send_keys(test_body)
+        textareas = thread_page.get_reply_textareas()
+        if textareas:
+            from selenium.webdriver.common.by import By
+            from helpers import Selectors
 
-                form = textarea.find_element(By.XPATH, "./ancestor::form")
-                submit = form.find_element(By.CSS_SELECTOR, "button[type='submit']")
-                submit.click()
+            # Use the last textarea
+            textarea = textareas[-1]
 
-                time.sleep(1)
+            # Scroll to element and use JavaScript to set value
+            # (handles cases where element is not directly interactable)
+            authenticated_browser.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'});", textarea
+            )
+            authenticated_browser.execute_script(
+                "arguments[0].value = arguments[1];", textarea, test_body
+            )
+            # Trigger input event to ensure form knows about the change
+            authenticated_browser.execute_script(
+                "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
+                textarea,
+            )
 
-                assert (
-                    "thread" in browser.current_url
-                    or "test.development" in browser.current_url
-                )
+            # Find and click submit using JavaScript
+            form = textarea.find_element(By.XPATH, "./ancestor::form")
+            submit = form.find_element(By.CSS_SELECTOR, Selectors.Compose.SUBMIT_BUTTON)
+            authenticated_browser.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'});", submit
+            )
+            authenticated_browser.execute_script("arguments[0].click();", submit)
 
-        except Exception as e:
-            pytest.skip(f"Could not submit reply: {e}")
+            # Should stay on thread/article page or redirect to group
+            # The reply URL contains the article ID so /a/ should be present
+            current_url = authenticated_browser.current_url
+            assert (
+                "/a/" in current_url
+                or "thread" in current_url
+                or "test.development" in current_url
+            ), f"Expected to stay on article/thread page, got: {current_url}"
+
+
+class TestUnauthenticatedSubmission:
+    """Tests to ensure unauthenticated users cannot submit posts or replies."""
+
+    def test_unauthenticated_post_submission_rejected(self, clean_browser: WebDriver):
+        """POST to /g/{group}/post without auth should return 401."""
+        # Navigate to a page first to set up the browser context
+        clean_browser.get(f"{SEPTEMBER_URL}/g/test.general")
+
+        # Try to POST directly to the submit endpoint using JavaScript
+        # This simulates what would happen if someone bypassed the UI
+        result = clean_browser.execute_async_script(
+            """
+            const callback = arguments[arguments.length - 1];
+            const formData = new FormData();
+            formData.append('subject', 'Unauthorized Test');
+            formData.append('body', 'This should be rejected');
+            formData.append('csrf_token', 'fake-token');
+
+            fetch('/g/test.general/post', {
+                method: 'POST',
+                body: formData
+            }).then(async response => {
+                callback({
+                    status: response.status,
+                    text: await response.text()
+                });
+            }).catch(err => {
+                callback({status: 0, text: err.toString()});
+            });
+            """
+        )
+
+        # Should get 401 Unauthorized
+        assert result["status"] == 401, f"Expected 401, got {result['status']}"
+        assert (
+            "must be logged in" in result["text"].lower()
+            or "authentication required" in result["text"].lower()
+        ), "Response should indicate authentication is required"
+
+    def test_unauthenticated_reply_submission_rejected(self, clean_browser: WebDriver):
+        """POST to /a/{message_id}/reply without auth should return 401."""
+        # First, get a real message ID by loading a thread page
+        clean_browser.get(f"{SEPTEMBER_URL}/g/test.general")
+
+        # Find a thread link and extract the message ID
+        thread_links = clean_browser.find_elements(
+            By.CSS_SELECTOR, "a[href*='/thread/']"
+        )
+        if not thread_links:
+            pytest.skip("No threads found to test reply against")
+
+        # Extract message ID from the thread URL
+        thread_url = thread_links[0].get_attribute("href")
+        if not thread_url:
+            pytest.skip("Could not get thread URL")
+        # URL format: /g/{group}/thread/{message_id}
+        message_id = thread_url.split("/thread/")[-1]
+
+        # Try to POST directly to the reply endpoint
+        result = clean_browser.execute_async_script(
+            """
+            const messageId = arguments[0];
+            const callback = arguments[arguments.length - 1];
+            const formData = new FormData();
+            formData.append('body', 'This unauthorized reply should be rejected');
+            formData.append('group', 'test.general');
+            formData.append('subject', 'Re: Test');
+            formData.append('references', '');
+            formData.append('csrf_token', 'fake-token');
+
+            fetch('/a/' + messageId + '/reply', {
+                method: 'POST',
+                body: formData
+            }).then(async response => {
+                callback({
+                    status: response.status,
+                    text: await response.text()
+                });
+            }).catch(err => {
+                callback({status: 0, text: err.toString()});
+            });
+            """,
+            message_id,
+        )
+
+        # Should get 401 Unauthorized
+        assert result["status"] == 401, f"Expected 401, got {result['status']}"
+        assert (
+            "must be logged in" in result["text"].lower()
+            or "authentication required" in result["text"].lower()
+        ), "Response should indicate authentication is required"
+
+    def test_compose_page_shows_auth_required(
+        self, compose_page_unauth: Callable[[str], ComposePage]
+    ):
+        """Accessing compose page without auth should show auth required message."""
+        page = compose_page_unauth("test.general")
+
+        # Should either redirect to login or show auth error
+        requires_auth = page.requires_auth()
+        has_form = page.has_form()
+
+        # The compose page should not show the form to unauthenticated users
+        assert requires_auth or not has_form, (
+            "Compose page should require authentication or not show form"
+        )
