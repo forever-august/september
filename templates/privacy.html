@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}{{ config.site_name }} - Privacy Policy{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Privacy Policy</h1>
+</div>
+
+<article class="privacy-policy">
+    <section>
+        <h2>Data Collection</h2>
+        <p>This site does not store or track user data. We do not use analytics, advertising trackers, or any third-party tracking services.</p>
+    </section>
+
+    <section>
+        <h2>Cookies</h2>
+        <p>We only use essential cookies necessary for the site to function, such as session cookies for authentication. No tracking or advertising cookies are used.</p>
+    </section>
+
+    <section>
+        <h2>Authentication</h2>
+        <p>When you log in, authentication is handled by external OpenID Connect providers. Any data processed during login is subject to the privacy policies of those providers.</p>
+    </section>
+
+    <section>
+        <h2>Content Submission</h2>
+        <p>Any content you submit through this site is transmitted to downstream NNTP servers. Such content is subject to the policies of those servers and their peers, over which we have no control.</p>
+    </section>
+</article>
+{% endblock %}

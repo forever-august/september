@@ -11,6 +11,7 @@ pub mod article;
 pub mod auth;
 pub mod home;
 pub mod post;
+pub mod privacy;
 pub mod threads;
 
 use axum::{middleware, routing::{get, post}, Router};
@@ -80,6 +81,14 @@ pub fn create_router(state: AppState) -> Router {
         .route("/g/{group}/post", post(post::submit))
         .route("/a/{message_id}/reply", post(post::reply));
 
+    // Privacy policy - static content, can use home cache duration
+    let privacy_routes = Router::new()
+        .route("/privacy", get(privacy::privacy))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            CACHE_CONTROL,
+            HeaderValue::from_static(CACHE_CONTROL_HOME),
+        ));
+
     Router::new()
         .merge(article_routes)
         .merge(thread_view_routes)
@@ -87,6 +96,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(home_routes)
         .merge(auth_routes)
         .merge(post_routes)
+        .merge(privacy_routes)
         .merge(static_routes)
         .with_state(state.clone())
         // Auth layer - extracts user from session cookie and handles session refresh
