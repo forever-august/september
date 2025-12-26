@@ -182,6 +182,9 @@ def format_performance_report(report: PerformanceReport) -> str:
     lines.append(f"  Total requests:      {report.total_requests}")
     lines.append(f"  Total route time:    {report.total_route_time_ms:.0f}ms")
     lines.append(f"  Session duration:    {report.total_duration_seconds:.2f}s")
+    lines.append(f"  Latency P50:         {report.p50_ms:.0f}ms")
+    lines.append(f"  Latency P90:         {report.p90_ms:.0f}ms")
+    lines.append(f"  Latency P99:         {report.p99_ms:.0f}ms")
     lines.append("")
 
     # Per-route breakdown (aggregated stats by pattern)
@@ -190,9 +193,11 @@ def format_performance_report(report: PerformanceReport) -> str:
         lines.append("Routes by Total Time")
         lines.append("-" * 40)
         lines.append(
-            f"  {'Route':<30} {'Count':>6} {'Avg':>8} {'Min':>8} {'Max':>8} {'Total':>8}"
+            f"  {'Route':<30} {'Count':>6} {'Avg':>8} {'Max':>8} {'P50':>8} {'P90':>8} {'P99':>8}"
         )
-        lines.append(f"  {'-' * 30} {'-' * 6} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 8}")
+        lines.append(
+            f"  {'-' * 30} {'-' * 6} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 8} {'-' * 8}"
+        )
 
         for stats in route_stats[:15]:  # Top 15 route patterns
             pattern_display = stats.pattern
@@ -200,8 +205,8 @@ def format_performance_report(report: PerformanceReport) -> str:
                 pattern_display = _truncate_middle(pattern_display, 30)
             lines.append(
                 f"  {pattern_display:<30} {stats.count:>6} "
-                f"{stats.avg_ms:>7.0f}ms {stats.min_ms:>7.0f}ms "
-                f"{stats.max_ms:>7.0f}ms {stats.total_ms:>7.0f}ms"
+                f"{stats.avg_ms:>7.0f}ms {stats.max_ms:>7.0f}ms "
+                f"{stats.p50_ms:>7.0f}ms {stats.p90_ms:>7.0f}ms {stats.p99_ms:>7.0f}ms"
             )
         lines.append("")
 

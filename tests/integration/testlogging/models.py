@@ -6,6 +6,26 @@ from datetime import datetime, timezone
 from urllib.parse import unquote, urlparse
 
 
+def _percentile(values: list[float], p: int) -> float:
+    """
+    Calculate the p-th percentile of a list of values using linear interpolation.
+
+    Args:
+        values: List of numeric values
+        p: Percentile to calculate (0-100)
+
+    Returns:
+        The value at the p-th percentile, or 0.0 if the list is empty
+    """
+    if not values:
+        return 0.0
+    sorted_vals = sorted(values)
+    k = (len(sorted_vals) - 1) * p / 100
+    f = int(k)
+    c = f + 1 if f + 1 < len(sorted_vals) else f
+    return sorted_vals[f] + (k - f) * (sorted_vals[c] - sorted_vals[f])
+
+
 def _extract_route_pattern(path: str) -> str:
     """
     Extract a route pattern from a URL path, replacing dynamic segments.
@@ -135,6 +155,21 @@ class RouteStats:
             return 0.0
         return sum(t.ttfb_ms for t in self.timings) / len(self.timings)
 
+    @property
+    def p50_ms(self) -> float:
+        """50th percentile (median) request duration."""
+        return _percentile([t.duration_ms for t in self.timings], 50)
+
+    @property
+    def p90_ms(self) -> float:
+        """90th percentile request duration."""
+        return _percentile([t.duration_ms for t in self.timings], 90)
+
+    @property
+    def p99_ms(self) -> float:
+        """99th percentile request duration."""
+        return _percentile([t.duration_ms for t in self.timings], 99)
+
 
 @dataclass
 class PerformanceReport:
@@ -160,6 +195,21 @@ class PerformanceReport:
     def total_route_time_ms(self) -> float:
         """Total time spent in route requests."""
         return sum(t.duration_ms for t in self.route_timings)
+
+    @property
+    def p50_ms(self) -> float:
+        """50th percentile (median) request duration across all requests."""
+        return _percentile([t.duration_ms for t in self.route_timings], 50)
+
+    @property
+    def p90_ms(self) -> float:
+        """90th percentile request duration across all requests."""
+        return _percentile([t.duration_ms for t in self.route_timings], 90)
+
+    @property
+    def p99_ms(self) -> float:
+        """99th percentile request duration across all requests."""
+        return _percentile([t.duration_ms for t in self.route_timings], 99)
 
     def get_route_stats(self) -> list[RouteStats]:
         """Get aggregated stats for each unique route pattern."""
