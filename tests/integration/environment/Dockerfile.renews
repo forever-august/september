@@ -1,0 +1,47 @@
+# Multi-stage build for Renews NNTP server
+# Builds from forever-august/renews repository
+
+# Stage 1: Build renews from source
+FROM rust:1.86-bookworm AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install nightly toolchain for edition 2024 support
+RUN rustup toolchain install nightly && rustup default nightly
+
+# Clone and build renews
+WORKDIR /build
+RUN git clone --depth 1 https://github.com/forever-august/renews.git .
+
+# Build release binary
+RUN cargo build --release
+
+# Stage 2: Runtime image
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user first
+RUN useradd -r -s /bin/false renews
+
+# Create data directories with proper ownership
+RUN mkdir -p /var/lib/renews /etc/renews && \
+    chown -R renews:renews /var/lib/renews
+
+# Copy the binary from builder
+COPY --from=builder /build/target/release/renews /usr/local/bin/renews
+
+USER renews
+
+# Default command - can be overridden
+EXPOSE 119
+CMD ["renews", "--config", "/etc/renews/renews.toml"]

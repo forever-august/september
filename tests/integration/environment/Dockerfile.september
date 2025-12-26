@@ -1,0 +1,54 @@
+# Multi-stage build for September web application
+# Builds from local source
+
+# Stage 1: Build September from source
+FROM rust:1.85-bookworm AS builder
+
+# Install build dependencies (aws-lc-rs requires cmake and clang)
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    cmake \
+    clang \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy source code
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+# Build release binary
+RUN cargo build --release
+
+# Stage 2: Runtime image
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the binary from builder
+COPY --from=builder /build/target/release/september /app/september
+
+# Copy templates and static files
+COPY templates /app/templates
+COPY static /app/static
+
+# Create config directory
+RUN mkdir -p /app/config
+
+# Create non-root user
+RUN useradd -r -s /bin/false september && \
+    chown -R september:september /app
+
+USER september
+
+EXPOSE 3000
+
+CMD ["/app/september", "-c", "/app/config/september.toml"]

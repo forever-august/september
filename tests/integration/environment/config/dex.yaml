@@ -1,0 +1,54 @@
+# Dex OIDC provider configuration for integration tests
+# Provides a simple OIDC provider with static users for testing
+
+issuer: http://dex:5556/dex
+
+storage:
+  type: sqlite3
+  config:
+    file: /tmp/dex.db
+
+web:
+  http: 0.0.0.0:5556
+
+# Skip the approval screen for faster testing
+oauth2:
+  skipApprovalScreen: true
+  responseTypes: ["code"]
+
+# Enable the password database for static users
+enablePasswordDB: true
+
+# Static client configuration for September
+staticClients:
+  - id: september-test
+    name: September Integration Tests
+    secret: september-test-client-secret
+    redirectURIs:
+      - http://september:3000/auth/callback/testidp
+      - http://localhost:3000/auth/callback/testidp
+
+# Static test users
+# Passwords are bcrypt hashed
+staticPasswords:
+  # User with email (can post articles)
+  # Password: testpassword
+  - email: testuser@example.com
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: testuser
+    userID: "test-user-001"
+  
+  # Second user for multi-user tests
+  # Password: testpassword
+  - email: otheruser@example.com
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: otheruser
+    userID: "test-user-002"
+
+# Use the local connector (password DB) only
+connectors: []
+
+# Logging
+logger:
+  level: info
+  format: text

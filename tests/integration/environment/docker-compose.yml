@@ -1,0 +1,128 @@
+# Integration test environment for September
+# 
+# Usage:
+#   ./setup.sh                              # Start all services and seed data
+#   ./teardown.sh                           # Cleanup
+#
+# Or manually:
+#   docker compose up -d --build            # Start all services
+#   docker compose run --rm seeder          # Seed test data
+#   docker compose down -v                  # Cleanup
+#
+# Services:
+#   - nntp: Renews NNTP server (port 119 internal, 1190 external)
+#   - dex: Dex OIDC provider (port 5556)
+#   - september: September web app (port 3000)
+#   - chrome: Selenium Chrome for browser automation (port 4444, VNC 7900)
+#   - seeder: One-shot container to populate test data
+
+services:
+  # NNTP Server - Renews
+  nntp:
+    build:
+      context: .
+      dockerfile: Dockerfile.renews
+    volumes:
+      - ./config/renews.toml:/etc/renews/renews.toml:ro
+      - nntp-data:/var/lib/renews
+    ports:
+      - "1190:119"
+    networks:
+      - integration
+    environment:
+      - RUST_LOG=renews=debug
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "119"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    # Initialize database and create test groups on first run
+    command: >
+      sh -c "renews --config /etc/renews/renews.toml --init &&
+             renews --config /etc/renews/renews.toml admin add-group test.general test.development test.announce || true &&
+             renews --config /etc/renews/renews.toml admin add-user testposter testpassword || true &&
+             renews --config /etc/renews/renews.toml"
+
+  # OIDC Provider - Dex
+  dex:
+    image: ghcr.io/dexidp/dex:v2.41.1
+    volumes:
+      - ./config/dex.yaml:/etc/dex/config.yaml:ro
+    ports:
+      - "5556:5556"
+    networks:
+      - integration
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5556/dex/.well-known/openid-configuration"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # September Application
+  september:
+    build:
+      context: ../../..
+      dockerfile: tests/integration/environment/Dockerfile.september
+    volumes:
+      - ./config/september.toml:/app/config/september.toml:ro
+    ports:
+      - "3000:3000"
+    environment:
+      - RUST_LOG=september=debug,tower_http=debug
+      - OIDC_COOKIE_SECRET=integration-test-cookie-secret-must-be-at-least-64-characters-long-for-security
+    networks:
+      - integration
+    depends_on:
+      nntp:
+        condition: service_healthy
+      dex:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # Selenium Chrome for browser automation
+  chrome:
+    image: selenium/standalone-chrome:131.0
+    ports:
+      - "4445:4444"   # Selenium WebDriver (external 4445 -> internal 4444)
+      - "7900:7900"   # VNC for debugging (password: secret)
+    shm_size: 2gb
+    networks:
+      - integration
+    environment:
+      - SE_NODE_MAX_SESSIONS=4
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4444/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Test data seeder (runs once)
+  seeder:
+    image: python:3.12-slim
+    volumes:
+      - .:/environment:ro
+      - ./config/renews.toml:/etc/renews/renews.toml:ro
+    networks:
+      - integration
+    depends_on:
+      nntp:
+        condition: service_healthy
+    working_dir: /environment
+    command: ["python", "seed_nntp.py", "--host", "nntp", "--port", "119"]
+    profiles:
+      - setup
+
+networks:
+  integration:
+    driver: bridge
+
+volumes:
+  nntp-data:

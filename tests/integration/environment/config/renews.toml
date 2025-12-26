@@ -1,0 +1,23 @@
+# Renews NNTP server configuration for integration tests
+# This configuration allows posting and uses SQLite for storage
+
+addr = ":119"
+site_name = "test.integration"
+
+# Database paths (mounted volume)
+db_path = "sqlite:///var/lib/renews/news.db"
+auth_db_path = "sqlite:///var/lib/renews/auth.db"
+
+# Retention settings
+default_retention_days = 30
+default_max_article_bytes = "1M"
+
+# Timeouts
+idle_timeout_secs = 300
+
+# Logging - verbose for debugging test failures
+log_level = "debug"
+log_format = "json"
+
+# Allow anonymous posting without authentication (for integration testing)
+allow_anonymous_posting = true

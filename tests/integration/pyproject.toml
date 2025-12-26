@@ -1,0 +1,33 @@
+[project]
+name = "september-integration-tests"
+version = "0.1.0"
+description = "Integration tests for September NNTP web interface"
+requires-python = ">=3.11"
+dependencies = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+    "selenium>=4.25",
+    "requests>=2.32",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/integration"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+markers = [
+    "auth: tests requiring authentication",
+    "posting: tests that create NNTP posts",
+    "slow: tests that take longer to run",
+]
+# Default to showing test output
+addopts = "-v --tb=short"
+# Per-test timeout in seconds (fails test if exceeded)
+timeout = 30
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+    "selenium>=4.25",
+    "requests>=2.32",
+]
