@@ -33,6 +33,10 @@ pub enum AppError {
     #[error("Article not found: {0}")]
     ArticleNotFound(String),
 
+    /// Requested newsgroup does not exist.
+    #[error("Group not found: {0}")]
+    GroupNotFound(String),
+
     /// File system or I/O errors.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
@@ -100,6 +104,7 @@ impl IntoResponse for AppErrorResponse {
     fn into_response(self) -> Response {
         let (status, message) = match &self.error {
             AppError::ArticleNotFound(_) => (StatusCode::NOT_FOUND, self.error.to_string()),
+            AppError::GroupNotFound(_) => (StatusCode::NOT_FOUND, self.error.to_string()),
             AppError::NntpConnection(_) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "NNTP server unavailable".to_string(),
@@ -133,14 +138,14 @@ impl IntoResponse for AppErrorResponse {
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
-    <div class="container">
+    <main class="container">
         <div class="error-page">
             <h1>Error {}</h1>
             <p>{}</p>
             {}
             <a href="/">Return to homepage</a>
         </div>
-    </div>
+    </main>
 </body>
 </html>"#,
             status.as_u16(),

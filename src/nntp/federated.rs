@@ -381,6 +381,24 @@ impl NntpFederatedService {
             || error_msg.contains("article not found")
     }
 
+    /// Check if an error indicates a "group not found" condition
+    /// NNTP 411 = "No such newsgroup"
+    fn is_group_not_found_error(error: &super::messages::NntpError) -> bool {
+        let error_msg = error.0.to_lowercase();
+        error_msg.contains("411")
+            || error_msg.contains("no such newsgroup")
+            || error_msg.contains("group not found")
+    }
+
+    /// Convert an NNTP error to an appropriate AppError
+    fn nntp_error_to_app_error(error: super::messages::NntpError, group: &str) -> AppError {
+        if Self::is_group_not_found_error(&error) {
+            AppError::GroupNotFound(group.to_string())
+        } else {
+            AppError::Internal(error.0)
+        }
+    }
+
     // =========================================================================
     // Incremental Update Helpers
     // =========================================================================
@@ -895,8 +913,8 @@ impl NntpFederatedService {
         // All servers failed
         tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         Err(last_error
-            .map(|e| AppError::Internal(e.0))
-            .unwrap_or_else(|| AppError::Internal("Group not found on any server".into())))
+            .map(|e| Self::nntp_error_to_app_error(e, group))
+            .unwrap_or_else(|| AppError::GroupNotFound(group.to_string())))
     }
 
     /// Fetch new articles since a given article number (for incremental updates)
