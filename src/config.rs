@@ -149,9 +149,6 @@ pub const NNTP_NEGATIVE_CACHE_TTL_SECS: u64 = 30;
 /// Maximum articles to fetch per request (prevents timeout on large groups)
 pub const NNTP_MAX_ARTICLES_PER_REQUEST: u64 = 10000;
 
-/// Maximum articles to search when fetching a single thread
-pub const NNTP_MAX_ARTICLES_SINGLE_THREAD: u64 = 5000;
-
 /// Maximum articles for HEAD fallback method (slowest path)
 pub const NNTP_MAX_ARTICLES_HEAD_FALLBACK: u64 = 1000;
 

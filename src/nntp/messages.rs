@@ -19,7 +19,7 @@ use super::{ArticleView, GroupView, ThreadView};
 /// responsive user experience. Aging prevents starvation of low-priority requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Priority {
-    /// User-facing requests that block page rendering (GetArticle, GetThread)
+    /// User-facing requests that block page rendering (GetArticle, PostArticle)
     High,
     /// Page load requests, slightly less latency-sensitive (GetThreads, GetGroups)
     Normal,
@@ -71,12 +71,6 @@ pub enum NntpRequest {
         count: u64,
         response: oneshot::Sender<Result<Vec<ThreadView>, NntpError>>,
     },
-    /// Fetch a single thread by root message ID
-    GetThread {
-        group: String,
-        message_id: String,
-        response: oneshot::Sender<Result<ThreadView, NntpError>>,
-    },
     /// Fetch a single article by message ID
     GetArticle {
         message_id: String,
@@ -107,12 +101,12 @@ impl NntpRequest {
     /// Get the priority level for this request type.
     ///
     /// Priority is determined by how latency-sensitive the operation is:
-    /// - High: User clicked something and is waiting (GetArticle, GetThread)
+    /// - High: User clicked something and is waiting (GetArticle, PostArticle)
     /// - Normal: Page load operations (GetThreads, GetGroups)
     /// - Low: Background refresh operations (GetGroupStats, GetNewArticles)
     pub fn priority(&self) -> Priority {
         match self {
-            NntpRequest::GetArticle { .. } | NntpRequest::GetThread { .. } | NntpRequest::PostArticle { .. } => Priority::High,
+            NntpRequest::GetArticle { .. } | NntpRequest::PostArticle { .. } => Priority::High,
             NntpRequest::GetThreads { .. } | NntpRequest::GetGroups { .. } => Priority::Normal,
             NntpRequest::GetGroupStats { .. } | NntpRequest::GetNewArticles { .. } => Priority::Low,
         }
@@ -131,13 +125,6 @@ impl NntpRequest {
             NntpRequest::GetThreads { response, .. } => {
                 if let Ok(NntpResponse::Threads(threads)) = result {
                     let _ = response.send(Ok(threads));
-                } else if let Err(e) = result {
-                    let _ = response.send(Err(e));
-                }
-            }
-            NntpRequest::GetThread { response, .. } => {
-                if let Ok(NntpResponse::Thread(thread)) = result {
-                    let _ = response.send(Ok(thread));
                 } else if let Err(e) = result {
                     let _ = response.send(Err(e));
                 }
@@ -178,7 +165,6 @@ impl NntpRequest {
 pub enum NntpResponse {
     Groups(Vec<GroupView>),
     Threads(Vec<ThreadView>),
-    Thread(ThreadView),
     Article(ArticleView),
     GroupStats(GroupStatsView),
     NewArticles(Vec<OverviewEntry>),

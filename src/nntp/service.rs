@@ -42,8 +42,6 @@ struct PendingRequests {
     articles: Mutex<HashMap<String, PendingEntry<ArticleView>>>,
     /// Arc-wrapped to avoid cloning Vec<ThreadView> on broadcast
     threads: Mutex<HashMap<String, ArcPendingEntry<Vec<ThreadView>>>>,
-    /// Arc-wrapped to avoid cloning ThreadView on broadcast
-    thread: Mutex<HashMap<String, ArcPendingEntry<ThreadView>>>,
     /// Arc-wrapped to avoid cloning Vec<GroupView> on broadcast
     groups: Mutex<Option<ArcPendingEntry<Vec<GroupView>>>>,
     group_stats: Mutex<HashMap<String, PendingEntry<GroupStatsView>>>,
@@ -54,7 +52,7 @@ struct PendingRequests {
 pub struct NntpService {
     /// Server name for logging
     name: String,
-    /// High-priority request queue (user-facing: GetArticle, GetThread)
+    /// High-priority request queue (user-facing: GetArticle, PostArticle)
     high_tx: Sender<NntpRequest>,
     high_rx: Receiver<NntpRequest>,
     /// Normal-priority request queue (page load: GetThreads, GetGroups)
@@ -102,7 +100,6 @@ impl NntpService {
             pending: Arc::new(PendingRequests {
                 articles: Mutex::new(HashMap::new()),
                 threads: Mutex::new(HashMap::new()),
-                thread: Mutex::new(HashMap::new()),
                 groups: Mutex::new(None),
                 group_stats: Mutex::new(HashMap::new()),
             }),
@@ -258,63 +255,6 @@ impl NntpService {
 
         // Broadcast Arc-wrapped result to waiters, then cleanup pending
         self.pending.threads.lock().await.remove(&cache_key);
-        let _ = tx.send(result.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.clone()));
-
-        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
-        result
-    }
-
-    /// Fetch a single thread by group and root message ID
-    #[instrument(
-        name = "nntp.service.get_thread",
-        skip(self),
-        fields(server = %self.name, coalesced = false, duration_ms)
-    )]
-    pub async fn get_thread(&self, group: &str, message_id: &str) -> Result<ThreadView, NntpError> {
-        let start = Instant::now();
-        let cache_key = format!("{}:{}", group, message_id);
-
-        // Check for pending request (coalesce if not timed out)
-        let mut pending = self.pending.thread.lock().await;
-        if let Some((tx, started_at)) = pending.get(&cache_key) {
-            if started_at.elapsed() < self.request_timeout {
-                let mut rx = tx.subscribe();
-                drop(pending);
-                tracing::Span::current().record("coalesced", true);
-
-                return match tokio::time::timeout(self.request_timeout, rx.recv()).await {
-                    Ok(Ok(result)) => result.map(unwrap_arc),
-                    Ok(Err(_)) => Err(NntpError("Broadcast channel closed".into())),
-                    Err(_) => Err(NntpError("Request timeout".into())),
-                };
-            } else {
-                tracing::debug!(server = %self.name, %group, %message_id, "Pending request timed out, starting new request");
-                pending.remove(&cache_key);
-            }
-        }
-
-        // Register pending request and send to worker
-        let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
-        pending.insert(cache_key.clone(), (tx.clone(), Instant::now()));
-        drop(pending);
-
-        let (resp_tx, resp_rx) = oneshot::channel();
-        self.send_request(NntpRequest::GetThread {
-            group: group.to_string(),
-            message_id: message_id.to_string(),
-            response: resp_tx,
-        })
-        .await?;
-
-        // Wait for result with timeout
-        let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(NntpError("Worker dropped request".into())),
-            Err(_) => Err(NntpError("Request timeout".into())),
-        };
-
-        // Broadcast Arc-wrapped result to waiters, then cleanup pending
-        self.pending.thread.lock().await.remove(&cache_key);
         let _ = tx.send(result.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.clone()));
 
         tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);

@@ -115,6 +115,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Initialized federated NNTP service"
     );
 
+    // Warmup: prefetch and cache the groups list before accepting requests
+    // This ensures the first request doesn't pay the NNTP fetch latency
+    match nntp_service.get_groups().await {
+        Ok(groups) => {
+            tracing::info!(count = groups.len(), "Warmed up groups cache");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to warm up groups cache");
+        }
+    }
+
     // Spawn background refresh task for active groups
     Arc::new(nntp_service.clone()).spawn_background_refresh();
     tracing::info!("Spawned background refresh task");
