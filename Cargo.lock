@@ -1535,7 +1535,7 @@ dependencies = [
 [[package]]
 name = "nntp-rs"
 version = "0.1.0"
-source = "git+https://github.com/forever-august/nntp-rs#3893a7a825ed690e4aeae29a4ac3d3d11af9dcee"
+source = "git+https://github.com/forever-august/nntp-rs#8145323a93b624f716760a7e69ec168f4f981ae1"
 dependencies = [
  "async-trait",
  "bytes",

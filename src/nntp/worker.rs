@@ -18,14 +18,13 @@ use std::time::{Duration, Instant};
 
 use async_channel::Receiver;
 use nntp_rs::net_client::NntpClient;
-use nntp_rs::ListVariant;
 use tokio::time::timeout;
 
 use tracing::{instrument, Span};
 
 use crate::config::{
     NntpServerConfig, NntpSettings, DEFAULT_SUBJECT, NNTP_MAX_ARTICLES_HEAD_FALLBACK,
-    NNTP_MAX_ARTICLES_PER_REQUEST, NNTP_MAX_ARTICLES_SINGLE_THREAD, NNTP_PRIORITY_AGING_SECS,
+    NNTP_MAX_ARTICLES_PER_REQUEST, NNTP_PRIORITY_AGING_SECS,
     NNTP_RECONNECT_DELAY_SECS,
 };
 
@@ -103,53 +102,47 @@ impl ServerCapabilities {
     }
 
     /// Determine the best method for fetching thread data
+    /// Prefers OVER (1 round-trip) over HDR (5 round-trips) for latency
     fn thread_fetch_method(&self) -> ThreadFetchMethod {
-        if self.hdr_supported {
-            ThreadFetchMethod::Hdr
-        } else if self.over_supported && self.references_in_overview {
+        if self.over_supported && self.references_in_overview {
             ThreadFetchMethod::Over
         } else if self.over_supported {
-            // OVER supported but References not in format - still try it
+            // OVER supported but References not confirmed - still try it
             // as most servers include References by default
             ThreadFetchMethod::Over
+        } else if self.hdr_supported {
+            ThreadFetchMethod::Hdr
         } else {
             ThreadFetchMethod::Head
         }
     }
 
-    /// Get LIST variants to try, ordered by preference
+    /// Get LIST methods to try, ordered by preference
     /// If capabilities were retrieved, only returns advertised variants
-    /// Otherwise returns all variants as fallback
-    fn get_list_variants(&self) -> Vec<(&'static str, ListVariant)> {
+    /// Otherwise returns all methods as fallback
+    fn get_list_methods(&self) -> Vec<&'static str> {
         if self.retrieved && !self.list_variants.is_empty() {
             // Use only advertised variants, but still try them in preference order
-            let mut variants = Vec::new();
+            let mut methods = Vec::new();
             if self.list_variants.contains("ACTIVE") {
-                variants.push(("LIST ACTIVE", ListVariant::Active(None)));
+                methods.push("LIST ACTIVE");
             }
             if self.list_variants.contains("NEWSGROUPS") {
-                variants.push(("LIST NEWSGROUPS", ListVariant::Newsgroups(None)));
-            }
-            if self.list_variants.contains("BASIC") || self.list_variants.is_empty() {
-                variants.push(("LIST", ListVariant::Basic(None)));
+                methods.push("LIST NEWSGROUPS");
             }
             // If no recognized variants, fall back to trying all
-            if variants.is_empty() {
-                return Self::all_list_variants();
+            if methods.is_empty() {
+                return Self::all_list_methods();
             }
-            variants
+            methods
         } else {
-            // Capabilities not available, try all variants
-            Self::all_list_variants()
+            // Capabilities not available, try all methods
+            Self::all_list_methods()
         }
     }
 
-    fn all_list_variants() -> Vec<(&'static str, ListVariant)> {
-        vec![
-            ("LIST ACTIVE", ListVariant::Active(None)),
-            ("LIST NEWSGROUPS", ListVariant::Newsgroups(None)),
-            ("LIST", ListVariant::Basic(None)),
-        ]
+    fn all_list_methods() -> Vec<&'static str> {
+        vec!["LIST ACTIVE", "LIST NEWSGROUPS"]
     }
 
     /// Check if posting is supported
@@ -357,17 +350,20 @@ impl NntpWorker {
                 }
             };
 
-            // If OVER is supported but not HDR, check if References is in overview format
-            if capabilities.over_supported && !capabilities.hdr_supported {
+            // If OVER is supported, check if References is in overview format
+            // We need this even if HDR is supported since we prefer OVER for latency
+            if capabilities.over_supported {
                 if capabilities.list_variants.contains("OVERVIEW.FMT") {
-                    match client.list(ListVariant::OverviewFmt).await {
-                        Ok(_) => {
-                            // The list() method returns NewsgroupList which is empty for OverviewFmt
-                            // We need to check the raw response. For now, assume References is present
-                            // as it's part of the standard RFC 3977 overview format.
-                            capabilities.references_in_overview = true;
+                    match client.list_overview_fmt().await {
+                        Ok(format) => {
+                            // Check if References is in the overview format
+                            // Format fields are like "Subject:", "From:", "References:", etc.
+                            capabilities.references_in_overview = format.iter()
+                                .any(|field| field.eq_ignore_ascii_case("References:"));
                             tracing::trace!(
-                                "OVERVIEW.FMT retrieved, assuming References field present"
+                                fields = ?format.iter().collect::<Vec<_>>(),
+                                references_found = capabilities.references_in_overview,
+                                "OVERVIEW.FMT retrieved"
                             );
                         }
                         Err(e) => {
@@ -479,43 +475,57 @@ impl NntpWorker {
                 Span::current().record("operation", "get_groups");
                 tracing::debug!("Fetching group list");
 
-                // Get LIST variants to try based on server capabilities
-                let list_variants = capabilities.get_list_variants();
+                // Get LIST methods to try based on server capabilities
+                let list_methods = capabilities.get_list_methods();
 
-                let mut last_error = None;
-                for (variant_name, variant) in list_variants {
-                    match client.list(variant).await {
-                        Ok(groups) => {
-                            tracing::debug!(
-                                variant = variant_name,
-                                count = groups.len(),
-                                "Successfully fetched groups"
-                            );
-                            let group_views: Vec<GroupView> = groups
-                                .iter()
-                                .map(|g| GroupView {
+                let mut last_error: Option<String> = None;
+                for method_name in list_methods {
+                    let result = match method_name {
+                        "LIST ACTIVE" => {
+                            client.list_active(None).await
+                                .map(|groups| groups.iter().map(|g| GroupView {
                                     name: g.name.clone(),
                                     description: None,
                                     article_count: None,
-                                })
-                                .collect();
+                                }).collect::<Vec<_>>())
+                                .map_err(|e| e.to_string())
+                        }
+                        "LIST NEWSGROUPS" => {
+                            client.list_newsgroups(None).await
+                                .map(|groups| groups.iter().map(|g| GroupView {
+                                    name: g.name.clone(),
+                                    description: Some(g.description.clone()),
+                                    article_count: None,
+                                }).collect::<Vec<_>>())
+                                .map_err(|e| e.to_string())
+                        }
+                        _ => continue,
+                    };
+
+                    match result {
+                        Ok(group_views) => {
+                            tracing::debug!(
+                                variant = method_name,
+                                count = group_views.len(),
+                                "Successfully fetched groups"
+                            );
                             return Ok(NntpResponse::Groups(group_views));
                         }
                         Err(e) => {
                             tracing::debug!(
-                                variant = variant_name,
+                                variant = method_name,
                                 error = %e,
-                                "LIST variant not supported, trying next"
+                                "LIST method not supported, trying next"
                             );
                             last_error = Some(e);
                         }
                     }
                 }
 
-                // All variants failed
+                // All methods failed
                 Err(NntpError(format!(
                     "Server does not support listing groups. Last error: {}",
-                    last_error.map(|e| e.to_string()).unwrap_or_default()
+                    last_error.unwrap_or_default()
                 )))
             }
 
@@ -558,7 +568,7 @@ impl NntpWorker {
                     ThreadFetchMethod::Over => {
                         // Fetch overview entries via OVER/XOVER
                         let entries = client
-                            .over(Some(range))
+                            .over(Some(range.clone()))
                             .await
                             .map_err(|e| NntpError(e.to_string()))?;
                         build_threads_from_overview(entries.to_vec())
@@ -588,64 +598,6 @@ impl NntpWorker {
                 });
 
                 Ok(NntpResponse::Threads(thread_views))
-            }
-
-            NntpRequest::GetThread { group, message_id, .. } => {
-                Span::current().record("operation", "get_thread");
-                let method = capabilities.thread_fetch_method();
-                tracing::debug!(%group, %message_id, ?method, "Fetching single thread");
-
-                // Select group
-                let stats = client
-                    .group(group)
-                    .await
-                    .map_err(|e| NntpError(e.to_string()))?;
-
-                // Fetch overview entries (larger range to find thread)
-                // Use bounded range to avoid timeout with large groups
-                let fetch_count = NNTP_MAX_ARTICLES_SINGLE_THREAD.min(stats.count);
-                let start = stats.last.saturating_sub(fetch_count) + 1;
-                let range = format!("{}-{}", start, stats.last);
-
-                // Use the same method selection for single thread fetching
-                let thread_views = match method {
-                    ThreadFetchMethod::Hdr => {
-                        // Fall back to OVER if HDR fails (e.g., due to non-UTF-8 data)
-                        match self.fetch_threads_via_hdr(client, &range).await {
-                            Ok(threads) => threads,
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "HDR fetch failed, falling back to OVER"
-                                );
-                                let entries = client
-                                    .over(Some(range))
-                                    .await
-                                    .map_err(|e| NntpError(e.to_string()))?;
-                                build_threads_from_overview(entries.to_vec())
-                            }
-                        }
-                    }
-                    ThreadFetchMethod::Over => {
-                        let entries = client
-                            .over(Some(range))
-                            .await
-                            .map_err(|e| NntpError(e.to_string()))?;
-                        build_threads_from_overview(entries.to_vec())
-                    }
-                    ThreadFetchMethod::Head => {
-                        self.fetch_threads_via_head(client, start, stats.last).await?
-                    }
-                };
-
-                // Find the thread containing the requested message_id
-                // The message_id could be the root or any reply in the thread
-                let thread = thread_views
-                    .into_iter()
-                    .find(|t| t.root_message_id == *message_id || t.root.contains_message_id(message_id))
-                    .ok_or_else(|| NntpError(format!("Thread not found: {}", message_id)))?;
-
-                Ok(NntpResponse::Thread(thread))
             }
 
             NntpRequest::GetArticle { message_id, .. } => {
