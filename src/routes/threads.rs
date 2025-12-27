@@ -116,7 +116,6 @@ pub async fn view(
         .nntp
         .get_thread_paginated(&path.group, &path.message_id, page, per_page, collapse_threshold)
         .await
-        .map_err(|_| AppError::ArticleNotFound(path.message_id.clone()))
         .with_request_id(&request_id)?;
 
     // Check if user can post to this group

@@ -42,7 +42,6 @@ pub async fn view(
         .nntp
         .get_article(&path.message_id)
         .await
-        .map_err(|_| AppError::ArticleNotFound(path.message_id.clone()))
         .with_request_id(&request_id)?;
 
     // Determine back link based on query param

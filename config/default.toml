@@ -35,7 +35,7 @@ worker_count = 2
 collapse_threshold = 5
 
 [cache]
-article_ttl_seconds = 86400    # 24 hours - articles are immutable
+article_ttl_seconds = 3600     # 1 hour - allows date_relative to stay fresh
 threads_ttl_seconds = 300      # 5 minutes
 groups_ttl_seconds = 3600      # 1 hour
 max_articles = 10000

@@ -29,30 +29,32 @@ fn extract_all_group_names(nodes: &[GroupTreeNode]) -> Vec<String> {
     names
 }
 
+/// Extract group names from top-level nodes only (no recursion into children)
+fn extract_top_level_group_names(nodes: &[GroupTreeNode]) -> Vec<String> {
+    nodes
+        .iter()
+        .filter_map(|node| node.full_name.clone())
+        .collect()
+}
+
 /// Get cached stats for groups and identify which need prefetching.
 /// Returns: (cached group stats, thread counts, groups needing prefetch)
 async fn get_stats_for_groups(
     state: &AppState,
     group_names: &[String],
 ) -> (HashMap<String, Option<String>>, HashMap<String, usize>, Vec<String>) {
-    let mut group_stats: HashMap<String, Option<String>> = HashMap::new();
-    let mut needs_prefetch: Vec<String> = Vec::new();
+    // Fetch group stats and thread counts in parallel
+    let (stats_result, thread_counts) = tokio::join!(
+        state.nntp.get_all_cached_group_stats(group_names),
+        state.nntp.get_all_cached_thread_counts_for(group_names)
+    );
 
-    for name in group_names {
-        if let Some(stats) = state.nntp.get_cached_group_stats(name).await {
-            group_stats.insert(name.clone(), stats.last_article_date);
-        } else {
-            needs_prefetch.push(name.clone());
-        }
-    }
-
-    // Get cached thread counts (from threads cache - only populated after visiting a group)
-    let thread_counts = state.nntp.get_all_cached_thread_counts_for(group_names).await;
-
+    let (group_stats, needs_prefetch) = stats_result;
     (group_stats, thread_counts, needs_prefetch)
 }
 
 /// Home page handler showing all newsgroups in a tree hierarchy.
+/// Only fetches stats for top-level groups, similar to /browse/{prefix}.
 #[instrument(name = "home::index", skip(state, request_id, current_user))]
 pub async fn index(
     State(state): State<AppState>,
@@ -65,12 +67,13 @@ pub async fn index(
     // Build tree hierarchy
     let tree = GroupTreeNode::build_tree(&groups);
 
-    // Extract all group names from the tree
-    let all_group_names = extract_all_group_names(&tree);
+    // Only get stats for top-level groups (visible at root level)
+    // This matches the behavior of /browse/{prefix} which only stats visible nodes
+    let top_level_group_names = extract_top_level_group_names(&tree);
 
     // Get cached stats + identify what needs prefetching
     let (group_stats, thread_counts, needs_prefetch) =
-        get_stats_for_groups(&state, &all_group_names).await;
+        get_stats_for_groups(&state, &top_level_group_names).await;
 
     // Trigger background prefetch for uncached groups
     if !needs_prefetch.is_empty() {
