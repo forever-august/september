@@ -27,14 +27,14 @@
                     {% if thread.root.article %}
                     <span class="author">{{ thread.root.article.from }}</span>
                     <span class="separator">·</span>
-                    <span class="date">{{ thread.root.article.date | timeago }}</span>
+                    <span class="date">{{ thread.root.article.date_relative }}</span>
                     {% endif %}
                 </div>
                 <div class="thread-footer">
                     <span class="reply-count">{{ thread.article_count - 1 }} replies</span>
                     {% if thread.last_post_date %}
                     <span class="separator">·</span>
-                    <span class="last-activity">most recent {{ thread.last_post_date | timeago }}</span>
+                    <span class="last-activity">most recent {{ thread.last_post_date_relative }}</span>
                     {% endif %}
                 </div>
             </div>

@@ -17,10 +17,14 @@ pub use federated::NntpFederatedService;
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use nntp_rs::OverviewEntry;
 use serde::Serialize;
 
-use crate::config::{DEFAULT_SUBJECT, PAGINATION_WINDOW};
+use crate::config::{
+    DEFAULT_PREVIEW_LINES, DEFAULT_SUBJECT, PAGINATION_WINDOW, PREVIEW_HARD_LIMIT,
+    SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, SECONDS_PER_MONTH, SECONDS_PER_YEAR,
+};
 
 /// Pagination state for paginated list views.
 #[derive(Debug, Clone, Serialize)]
@@ -72,6 +76,8 @@ pub struct ThreadView {
     pub root: ThreadNodeView,
     /// Date of the most recent post in the thread
     pub last_post_date: Option<String>,
+    /// Pre-computed relative time for last post (e.g., "2 hours ago")
+    pub last_post_date_relative: Option<String>,
 }
 
 /// Node in a threaded article tree with child replies.
@@ -179,7 +185,13 @@ pub struct ArticleView {
     pub subject: String,
     pub from: String,
     pub date: String,
+    /// Pre-computed relative time (e.g., "2 hours ago")
+    pub date_relative: String,
     pub body: Option<String>,
+    /// Pre-computed preview text (stripped quotes, limited lines)
+    pub body_preview: Option<String>,
+    /// Whether body exceeds preview length
+    pub has_more_content: bool,
     /// Raw headers for full header display (only populated for single article view)
     pub headers: Option<String>,
 }
@@ -349,12 +361,27 @@ pub fn parse_article(article: &nntp_rs::Article) -> ArticleView {
         .raw_headers()
         .map(|h| String::from_utf8_lossy(h).to_string());
 
+    let date = article.date().unwrap_or_default();
+    let date_relative = compute_timeago(&date);
+
+    let body = article.body_text();
+    let (body_preview, has_more_content) = match &body {
+        Some(b) => {
+            let (preview, more) = compute_preview(b);
+            (Some(preview), more)
+        }
+        None => (None, false),
+    };
+
     ArticleView {
         message_id: article.article_id().to_string(),
         subject: article.subject().unwrap_or_default(),
         from: article.from().unwrap_or_default(),
-        date: article.date().unwrap_or_default(),
-        body: article.body_text(),
+        date,
+        date_relative,
+        body,
+        body_preview,
+        has_more_content,
         headers,
     }
 }
@@ -424,6 +451,8 @@ pub fn build_threads_from_overview(entries: Vec<OverviewEntry>) -> Vec<ThreadVie
         let root_node = build_thread_tree(&root_id, &thread_entries, &entries_by_id);
         let last_post_date = find_latest_date_overview(&thread_entries);
 
+        let last_post_date_relative = last_post_date.as_ref().map(|d| compute_timeago(d));
+
         thread_views.push(ThreadView {
             subject,
             // Always use original root_id so thread can be found even if root article is missing
@@ -431,6 +460,7 @@ pub fn build_threads_from_overview(entries: Vec<OverviewEntry>) -> Vec<ThreadVie
             article_count: thread_entries.len(),
             root: root_node,
             last_post_date,
+            last_post_date_relative,
         });
     }
 
@@ -509,12 +539,18 @@ fn build_node_from_entry(
 
 /// Convert OverviewEntry to ArticleView
 fn overview_entry_to_article_view(entry: &OverviewEntry) -> ArticleView {
+    let date = entry.date().unwrap_or("").to_string();
+    let date_relative = compute_timeago(&date);
+
     ArticleView {
         message_id: entry.message_id().unwrap_or("").to_string(),
         subject: entry.subject().unwrap_or(DEFAULT_SUBJECT).to_string(),
         from: entry.from().unwrap_or("").to_string(),
-        date: entry.date().unwrap_or("").to_string(),
+        date,
+        date_relative,
         body: None, // Overview doesn't include body
+        body_preview: None,
+        has_more_content: false,
         headers: None,
     }
 }
@@ -821,6 +857,8 @@ pub fn build_threads_from_hdr(articles: Vec<HdrArticleData>) -> Vec<ThreadView> 
         let root_node = build_thread_tree_hdr(&root_id, &thread_articles, &articles_by_id);
         let last_post_date = find_latest_date_hdr(&thread_articles);
 
+        let last_post_date_relative = last_post_date.as_ref().map(|d| compute_timeago(d));
+
         thread_views.push(ThreadView {
             subject,
             // Always use original root_id so thread can be found even if root article is missing
@@ -828,6 +866,7 @@ pub fn build_threads_from_hdr(articles: Vec<HdrArticleData>) -> Vec<ThreadView> 
             article_count: thread_articles.len(),
             root: root_node,
             last_post_date,
+            last_post_date_relative,
         });
     }
 
@@ -873,13 +912,19 @@ fn build_node_from_hdr(
     // Find the article for this message
     let article = articles.iter().find(|a| a.message_id == msg_id);
 
-    let article_view = article.map(|a| ArticleView {
-        message_id: a.message_id.clone(),
-        subject: a.subject.clone(),
-        from: a.from.clone(),
-        date: a.date.clone(),
-        body: None, // HDR doesn't include body
-        headers: None,
+    let article_view = article.map(|a| {
+        let date_relative = compute_timeago(&a.date);
+        ArticleView {
+            message_id: a.message_id.clone(),
+            subject: a.subject.clone(),
+            from: a.from.clone(),
+            date: a.date.clone(),
+            date_relative,
+            body: None, // HDR doesn't include body
+            body_preview: None,
+            has_more_content: false,
+            headers: None,
+        }
     });
 
     // Build child nodes
@@ -917,4 +962,209 @@ fn find_latest_date_hdr(articles: &[&HdrArticleData]) -> Option<String> {
     }
 
     latest.map(|(s, _)| s)
+}
+
+// =============================================================================
+// Pre-computation helpers for template filter elimination
+// =============================================================================
+
+/// Convert a date string to a human-readable relative time (e.g., "2 hours ago").
+/// Returns the original string if parsing fails.
+pub fn compute_timeago(date_str: &str) -> String {
+    let parsed = DateTime::parse_from_rfc2822(date_str)
+        .map(|dt| dt.with_timezone(&Utc))
+        .or_else(|_| DateTime::parse_from_rfc3339(date_str).map(|dt| dt.with_timezone(&Utc)));
+
+    match parsed {
+        Ok(date) => {
+            let now = Utc::now();
+            let duration = now.signed_duration_since(date);
+            let seconds = duration.num_seconds();
+
+            if seconds < 0 {
+                "in the future".to_string()
+            } else if seconds < SECONDS_PER_MINUTE {
+                "just now".to_string()
+            } else if seconds < SECONDS_PER_HOUR {
+                let mins = seconds / SECONDS_PER_MINUTE;
+                if mins == 1 {
+                    "1 minute ago".to_string()
+                } else {
+                    format!("{} minutes ago", mins)
+                }
+            } else if seconds < SECONDS_PER_DAY {
+                let hours = seconds / SECONDS_PER_HOUR;
+                if hours == 1 {
+                    "1 hour ago".to_string()
+                } else {
+                    format!("{} hours ago", hours)
+                }
+            } else if seconds < SECONDS_PER_MONTH {
+                let days = seconds / SECONDS_PER_DAY;
+                if days == 1 {
+                    "1 day ago".to_string()
+                } else {
+                    format!("{} days ago", days)
+                }
+            } else if seconds < SECONDS_PER_YEAR {
+                let months = seconds / SECONDS_PER_MONTH;
+                if months == 1 {
+                    "1 month ago".to_string()
+                } else {
+                    format!("{} months ago", months)
+                }
+            } else {
+                let years = seconds / SECONDS_PER_YEAR;
+                if years == 1 {
+                    "1 year ago".to_string()
+                } else {
+                    format!("{} years ago", years)
+                }
+            }
+        }
+        Err(_) => date_str.to_string(),
+    }
+}
+
+/// Check if a line is a quote line (starts with >) or a quote attribution line.
+fn is_quote_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+
+    // Lines starting with > are block quotes
+    if trimmed.starts_with('>') {
+        return true;
+    }
+
+    // Check for quote attribution lines like "On <date>, <name> wrote:"
+    if trimmed.starts_with("On ") && trimmed.ends_with(':') {
+        let lower = trimmed.to_lowercase();
+        if lower.ends_with(" wrote:")
+            || lower.ends_with(" writes:")
+            || lower.ends_with(" said:")
+            || lower.ends_with(" says:")
+        {
+            return true;
+        }
+    }
+
+    // Check for "name <email> writes:" pattern
+    if trimmed.ends_with(':') && trimmed.contains('<') && trimmed.contains('>') {
+        let lower = trimmed.to_lowercase();
+        if lower.ends_with(" wrote:")
+            || lower.ends_with(" writes:")
+            || lower.ends_with(" said:")
+            || lower.ends_with(" says:")
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Strip block quotes from beginning and end of text.
+fn strip_block_quotes(s: &str) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+
+    // Find first non-quote line
+    let mut start = 0;
+    while start < lines.len() {
+        let line = lines[start];
+        if is_quote_line(line) || line.trim().is_empty() {
+            if line.trim().is_empty() {
+                let next_non_empty = lines[start + 1..].iter().position(|l| !l.trim().is_empty());
+                match next_non_empty {
+                    Some(offset) if is_quote_line(lines[start + 1 + offset]) => start += 1,
+                    None => start += 1,
+                    _ => break,
+                }
+            } else {
+                start += 1;
+            }
+        } else {
+            break;
+        }
+    }
+
+    while start < lines.len() && lines[start].trim().is_empty() {
+        start += 1;
+    }
+
+    // Find last non-quote line
+    let mut end = lines.len();
+    while end > start {
+        let line = lines[end - 1];
+        if is_quote_line(line) || line.trim().is_empty() {
+            if line.trim().is_empty() {
+                let prev_non_empty = lines[..end - 1].iter().rposition(|l| !l.trim().is_empty());
+                match prev_non_empty {
+                    Some(idx) if is_quote_line(lines[idx]) => end -= 1,
+                    None => end -= 1,
+                    _ => break,
+                }
+            } else {
+                end -= 1;
+            }
+        } else {
+            break;
+        }
+    }
+
+    while end > start && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+
+    if start >= end {
+        return String::new();
+    }
+
+    lines[start..end].join("\n")
+}
+
+/// Compute preview text and whether there's more content.
+/// Returns (preview_text, has_more_content).
+pub fn compute_preview(body: &str) -> (String, bool) {
+    let max_lines = DEFAULT_PREVIEW_LINES;
+    let stripped = strip_block_quotes(body);
+
+    let lines: Vec<&str> = stripped.lines().collect();
+    let line_count = lines.len();
+
+    if line_count <= max_lines && stripped.len() <= PREVIEW_HARD_LIMIT {
+        return (stripped, false);
+    }
+
+    let has_more = line_count > max_lines || stripped.len() > PREVIEW_HARD_LIMIT;
+
+    if line_count <= max_lines {
+        // Under line limit but over character limit
+        if let Some(pos) = stripped.get(PREVIEW_HARD_LIMIT..).and_then(|s| s.find('\n')) {
+            return (stripped[..PREVIEW_HARD_LIMIT + pos].to_string(), has_more);
+        }
+        return (
+            stripped.get(..PREVIEW_HARD_LIMIT).unwrap_or(&stripped).to_string(),
+            has_more,
+        );
+    }
+
+    // Over line limit: take max_lines, extend to next paragraph break
+    let mut result = lines[..max_lines].join("\n");
+
+    for line in &lines[max_lines..] {
+        if line.trim().is_empty() {
+            break;
+        }
+        result.push('\n');
+        result.push_str(line);
+        if result.len() >= PREVIEW_HARD_LIMIT {
+            result.truncate(PREVIEW_HARD_LIMIT);
+            break;
+        }
+    }
+
+    if result.len() > PREVIEW_HARD_LIMIT {
+        result.truncate(PREVIEW_HARD_LIMIT);
+    }
+
+    (result, has_more)
 }

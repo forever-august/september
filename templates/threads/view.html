@@ -37,13 +37,13 @@
                 <div class="comment-meta">
                     <span class="author">{{ comment.article.from }}</span>
                     <span class="separator">·</span>
-                    <span class="date">{{ comment.article.date | timeago }}</span>
+                    <span class="date">{{ comment.article.date_relative }}</span>
                 </div>
             </div>
             <div class="comment-body">
                 {% if comment.article.body %}
-                <pre class="article-text article-preview">{{ comment.article.body | preview(lines=10) }}</pre>
-                {% if comment.article.body | has_more_lines(lines=10) %}
+                <pre class="article-text article-preview">{{ comment.article.body_preview }}</pre>
+                {% if comment.article.has_more_content %}
                 <a href="/a/{{ comment.message_id | urlencode_strict }}?back=/g/{{ group }}/thread/{{ thread.root_message_id | urlencode_strict }}{% if pagination.current_page > 1 %}%3Fpage%3D{{ pagination.current_page }}{% endif %}" class="read-more">Read more</a>
                 {% endif %}
                 {% else %}
