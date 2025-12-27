@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",
+    "pytest-xdist>=3.5",
     "selenium>=4.25",
     "requests>=2.32",
 ]
@@ -14,6 +15,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",
+    "pytest-xdist>=3.5",
     "selenium>=4.25",
     "requests>=2.32",
 ]

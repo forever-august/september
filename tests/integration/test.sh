@@ -7,6 +7,7 @@
 #   --skip-teardown    Don't tear down environment after tests (for debugging)
 #   --rebuild          Force rebuild Docker containers
 #   --verbose          Enable verbose output
+#   --parallel [N]     Run tests in parallel (N workers, default: auto)
 #   -h, --help         Show this help
 #
 # Examples:
@@ -14,6 +15,8 @@
 #   ./test.sh -k test_auth         # Run only auth tests
 #   ./test.sh --skip-teardown      # Keep containers running after tests
 #   ./test.sh --rebuild            # Rebuild containers before running
+#   ./test.sh --parallel           # Run tests in parallel (auto-detect workers)
+#   ./test.sh --parallel 4         # Run tests with 4 parallel workers
 
 set -e
 
@@ -26,6 +29,8 @@ cd "$SCRIPT_DIR"
 SKIP_TEARDOWN=0
 REBUILD=0
 VERBOSE=0
+PARALLEL=0
+PARALLEL_WORKERS=""
 PYTEST_ARGS=()
 
 show_help() {
@@ -45,6 +50,15 @@ while [[ $# -gt 0 ]]; do
         --verbose)
             VERBOSE=1
             shift
+            ;;
+        --parallel)
+            PARALLEL=1
+            shift
+            # Check if next arg is a number (worker count)
+            if [[ $# -gt 0 && $1 =~ ^[0-9]+$ ]]; then
+                PARALLEL_WORKERS=$1
+                shift
+            fi
             ;;
         -h|--help)
             show_help
@@ -78,6 +92,16 @@ if [[ $VERBOSE -eq 1 ]]; then
 else
     PYTEST_CMD_ARGS+=("-v")
 fi
+
+# Add parallel execution args
+if [[ $PARALLEL -eq 1 ]]; then
+    if [[ -n $PARALLEL_WORKERS ]]; then
+        PYTEST_CMD_ARGS+=("-n" "$PARALLEL_WORKERS")
+    else
+        PYTEST_CMD_ARGS+=("-n" "auto")
+    fi
+fi
+
 PYTEST_CMD_ARGS+=("${PYTEST_ARGS[@]}")
 
 # Run tests

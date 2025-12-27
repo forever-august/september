@@ -43,7 +43,7 @@ services_healthy() {
     local running
     running=$(docker compose ps --format json 2>/dev/null | grep -c '"State":"running"' || echo "0")
     # We expect at least 4 running services (nntp, dex, september, chrome)
-    [[ "$running" -ge 4 ]]
+    [[ $running -ge 4 ]]
 }
 
 # If rebuild requested, tear down first

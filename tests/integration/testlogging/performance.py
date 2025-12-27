@@ -9,11 +9,38 @@ JS_GET_NAVIGATION_TIMING = """
 const entries = performance.getEntriesByType('navigation');
 if (entries.length === 0) return null;
 const nav = entries[0];
+
+// For measuring route performance, we want the time from when the browser
+// started the request to when it received the response.
+// 
+// For redirects (like OIDC flows):
+// - responseStart/responseEnd for the final URL may be accurate
+// - But requestStart may be 0 for cross-origin redirects
+//
+// Best approach: use responseStart - fetchStart for TTFB (if responseStart > 0)
+// and responseEnd - responseStart for response body time.
+// Total page time = responseEnd - fetchStart (when fetchStart > 0)
+
+let ttfb = 0;
+let duration = nav.duration;
+
+if (nav.responseStart > 0 && nav.fetchStart > 0) {
+    // Normal case: we have valid timing data
+    ttfb = nav.responseStart - nav.fetchStart;
+    duration = nav.responseEnd - nav.fetchStart;
+} else if (nav.responseStart > 0 && nav.requestStart > 0) {
+    // Fallback: use requestStart
+    ttfb = nav.responseStart - nav.requestStart;
+    duration = nav.responseEnd - nav.requestStart;
+}
+// else: use nav.duration (full navigation time including redirects)
+
 return {
     url: nav.name,
-    duration: nav.duration,
-    ttfb: nav.responseStart - nav.requestStart,
-    type: nav.initiatorType
+    duration: duration,
+    ttfb: ttfb,
+    type: nav.initiatorType,
+    redirectCount: nav.redirectCount || 0
 };
 """
 
@@ -39,6 +66,10 @@ def get_navigation_timing(driver: WebDriver, test_name: str) -> RouteTiming | No
     Get navigation timing for the current page load.
 
     Returns timing info for the main document navigation, or None if not available.
+
+    Duration is measured from fetchStart to responseEnd, which excludes time spent
+    in redirect chains (like OIDC flows). This gives a more accurate measure of
+    actual page load performance.
     """
     try:
         result = driver.execute_script(JS_GET_NAVIGATION_TIMING)
@@ -49,7 +80,7 @@ def get_navigation_timing(driver: WebDriver, test_name: str) -> RouteTiming | No
             url=result["url"],
             method="GET",  # Navigation is always GET
             duration_ms=result["duration"],
-            ttfb_ms=max(0, result["ttfb"]),  # Can be negative if cached
+            ttfb_ms=max(0, result["ttfb"]),
             test_name=test_name,
         )
     except Exception:

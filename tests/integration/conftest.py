@@ -6,8 +6,10 @@ Provides:
 - Page object factory fixtures
 - Authentication helpers
 - Log capture and failure analysis for debugging
+- Support for parallel test execution with pytest-xdist
 """
 
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -62,6 +64,16 @@ from pages import (
 PERF_REPORT_MODE = os.environ.get("PERF_REPORT", "none")
 
 
+def is_xdist_worker() -> bool:
+    """Check if we're running as a pytest-xdist worker."""
+    return os.environ.get("PYTEST_XDIST_WORKER") is not None
+
+
+def get_worker_id() -> str:
+    """Get the xdist worker ID, or 'master' if not running in parallel."""
+    return os.environ.get("PYTEST_XDIST_WORKER", "master")
+
+
 # =============================================================================
 # Pytest Configuration
 # =============================================================================
@@ -93,12 +105,62 @@ def pytest_generate_tests(metafunc):
 # Pytest Hooks for Log Capture and Performance Tracking
 # =============================================================================
 
-# Global performance report for the session
+# Global performance report for the session (per-worker in parallel mode)
 _performance_report: PerformanceReport | None = None
 # Current test name for attribution
 _current_test_name: str = ""
 # Reference to browser for performance capture
 _session_browser: WebDriver | None = None
+# Temp directory for worker timing files (set by master in parallel mode)
+_timing_tmpdir: Path | None = None
+# Collected timings from workers (master only)
+_worker_timings: list[RouteTiming] = []
+
+
+def pytest_configure(config):
+    """Configure xdist worker communication for performance data."""
+    global _timing_tmpdir
+
+    # In parallel mode, set up a shared temp directory for timing data
+    if hasattr(config, "workerinput"):
+        # Worker: get the timing dir from master
+        _timing_tmpdir = Path(config.workerinput.get("timing_tmpdir", ""))
+    elif hasattr(config, "pluginmanager") and config.pluginmanager.hasplugin("xdist"):
+        # Master with xdist: create timing temp dir
+        import tempfile
+
+        _timing_tmpdir = Path(tempfile.mkdtemp(prefix="september_perf_"))
+
+
+def pytest_configure_node(node):
+    """Called on xdist master to configure each worker node."""
+    global _timing_tmpdir
+    if _timing_tmpdir:
+        node.workerinput["timing_tmpdir"] = str(_timing_tmpdir)
+
+
+def pytest_testnodedown(node, error):
+    """Called on xdist master when a worker node finishes. Collect its timings."""
+    global _timing_tmpdir, _worker_timings
+
+    if _timing_tmpdir and _timing_tmpdir.exists():
+        worker_id = node.workerinput.get("workerid", "unknown")
+        timing_file = _timing_tmpdir / f"timings_{worker_id}.json"
+        if timing_file.exists():
+            try:
+                data = json.loads(timing_file.read_text())
+                for t in data:
+                    _worker_timings.append(
+                        RouteTiming(
+                            url=t["url"],
+                            method=t["method"],
+                            duration_ms=t["duration_ms"],
+                            ttfb_ms=t["ttfb_ms"],
+                            test_name=t["test_name"],
+                        )
+                    )
+            except Exception:
+                pass
 
 
 def pytest_sessionstart(session):
@@ -148,16 +210,51 @@ def pytest_runtest_makereport(item, call):
 
 def pytest_sessionfinish(session, exitstatus):
     """Print the performance report at the end of the test session."""
-    global _performance_report
-    if _performance_report is not None and _performance_report.route_timings:
+    global _performance_report, _timing_tmpdir, _worker_timings
+
+    if is_xdist_worker():
+        # Worker: write timings to a file for master to collect
+        if (
+            _performance_report is not None
+            and _performance_report.route_timings
+            and _timing_tmpdir
+        ):
+            worker_id = get_worker_id()
+            timing_file = _timing_tmpdir / f"timings_{worker_id}.json"
+            timings_data = [
+                {
+                    "url": t.url,
+                    "method": t.method,
+                    "duration_ms": t.duration_ms,
+                    "ttfb_ms": t.ttfb_ms,
+                    "test_name": t.test_name,
+                }
+                for t in _performance_report.route_timings
+            ]
+            timing_file.write_text(json.dumps(timings_data))
+    else:
+        # Master or non-parallel: aggregate and print report
+        if _performance_report is None:
+            _performance_report = PerformanceReport(
+                session_start=datetime.now(timezone.utc)
+            )
+
         _performance_report.session_end = datetime.now(timezone.utc)
-        report = format_performance_report(_performance_report)
-        # Use terminal writer if available for proper output
-        if hasattr(session.config, "_tw"):
-            session.config._tw.write(report)
-            session.config._tw.write("\n")
-        else:
-            print(report)
+
+        # Combine local timings (non-parallel) with worker timings (parallel)
+        all_timings = list(_performance_report.route_timings) + _worker_timings
+
+        # Clean up temp dir if it exists
+        if _timing_tmpdir and _timing_tmpdir.exists():
+            import shutil
+
+            shutil.rmtree(_timing_tmpdir, ignore_errors=True)
+
+        if all_timings:
+            _performance_report.route_timings = all_timings
+            report = format_performance_report(_performance_report)
+            # Print to stdout (pytest captures this)
+            print(f"\n{report}")
 
 
 # =============================================================================
@@ -170,8 +267,12 @@ def browser() -> Generator[WebDriver, None, None]:
     """
     Create a Selenium WebDriver connected to the Chrome container.
 
-    This fixture is session-scoped so the browser persists across all tests,
-    making the test suite faster.
+    This fixture is session-scoped so the browser persists across all tests
+    within a single worker, making the test suite faster.
+
+    In parallel mode (pytest-xdist), each worker gets its own browser instance.
+    Note: The Selenium container supports up to 4 concurrent sessions
+    (SE_NODE_MAX_SESSIONS=4), so use --parallel 4 or fewer workers.
 
     Note: Docker environment must be started before running tests.
     Use ./test.sh to run tests with automatic environment setup.
