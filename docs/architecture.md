@@ -25,16 +25,21 @@ graph TB
     Router --> Home[Home/Browse]
     Router --> Threads[Threads]
     Router --> Article[Article]
+    Router --> Post[Post/Reply]
+    Router --> Auth[Auth]
     Router --> Static[Static Files]
 
     Home --> AppState
     Threads --> AppState
     Article --> AppState
+    Post --> AppState
+    Auth --> AppState
 
     subgraph AppState["AppState"]
         Config[Config]
         Templates[Tera Templates]
         Federated[NntpFederatedService]
+        OIDC[OidcState - optional]
     end
 ```
 
@@ -97,7 +102,7 @@ Each `NntpService` manages three priority queues (`async_channel`). Workers chec
 
 | Priority | Operations | Use Case |
 |----------|------------|----------|
-| **High** | `GetArticle`, `GetThread` | User clicked on content, blocking page render |
+| **High** | `GetArticle`, `PostArticle`, `CheckArticleExists` | User clicked on content or posted, blocking page render |
 | **Normal** | `GetThreads`, `GetGroups` | Page load operations |
 | **Low** | `GetGroupStats`, `GetNewArticles` | Background refresh, prefetch |
 
@@ -112,17 +117,22 @@ Priority is determined by `NntpRequest::priority()` in `src/nntp/messages.rs`. S
 | Application state | `src/state.rs` (`AppState`) | Shared state container (Config, Tera, NntpFederatedService) |
 | Error handling | `src/error.rs` | Error types and HTTP response conversion |
 | Templates | `src/templates.rs` | Tera template engine initialization |
-| Middleware | `src/middleware.rs` | Request ID generation and request span creation |
+| Middleware | `src/middleware.rs` | Request ID generation, authentication extractors, session handling |
 | Federated service | `src/nntp/federated.rs` (`NntpFederatedService`) | Multi-server facade with caching and failover |
 | Single-server service | `src/nntp/service.rs` (`NntpService`) | Per-server request handling with coalescing |
 | Workers | `src/nntp/worker.rs` (`NntpWorker`) | NNTP connection management and protocol handling |
 | Message types | `src/nntp/messages.rs` (`NntpRequest`, `NntpResponse`) | Request/response types for worker communication |
 | TLS handling | `src/nntp/tls.rs` (`NntpStream`) | TLS stream wrapper for NNTP connections |
 | Data types | `src/nntp/mod.rs` | View models, thread tree building, pagination |
-| Router | `src/routes/mod.rs` (`create_router`) | Route registration and cache-control headers |
+| Router | `src/routes/mod.rs` (`create_router`) | Route registration, cache-control headers, auth helpers |
 | Home routes | `src/routes/home.rs` (`index`, `browse`) | Group listing and hierarchy browsing |
 | Thread routes | `src/routes/threads.rs` (`list`, `view`) | Thread list and thread view handlers |
 | Article routes | `src/routes/article.rs` (`view`) | Single article view handler |
+| Post routes | `src/routes/post.rs` (`compose`, `submit`, `reply`) | New post and reply handlers |
+| Auth routes | `src/routes/auth.rs` (`login`, `callback`, `logout`) | OIDC authentication flow handlers |
+| Privacy routes | `src/routes/privacy.rs` (`privacy`) | Privacy policy page |
+| OIDC module | `src/oidc/mod.rs` | OpenID Connect client and provider management |
+| Session handling | `src/oidc/session.rs` | User session data, CSRF tokens, cookie management |
 
 ## Data Flow
 

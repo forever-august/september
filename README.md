@@ -11,6 +11,8 @@ A Rust web application that provides a modern web interface to NNTP (Usenet/news
 - TLS support with opportunistic fallback
 - Hierarchical newsgroup browsing
 - Threaded article view with pagination
+- Post and reply support (requires authentication)
+- OpenID Connect (OIDC) authentication with multiple providers
 - CDN-friendly Cache-Control headers
 
 ## Quickstart
@@ -76,6 +78,8 @@ The default configuration connects to `nntp.lore.kernel.org` (Linux kernel maili
 - [docs/architecture.md](docs/architecture.md) - System architecture
 - [docs/nntp-service.md](docs/nntp-service.md) - NNTP service design
 - [docs/routing.md](docs/routing.md) - HTTP routing and caching
+- [docs/oidc.md](docs/oidc.md) - OpenID Connect authentication
+- [docs/background-refresh.md](docs/background-refresh.md) - Activity-based cache refresh
 
 ## License
 

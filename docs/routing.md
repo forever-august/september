@@ -10,7 +10,15 @@ September uses [Axum](https://github.com/tokio-rs/axum) for HTTP routing with pe
 | `/browse/{*prefix}` | `home::browse` | Browse newsgroups by prefix |
 | `/g/{group}` | `threads::list` | Thread list for a newsgroup |
 | `/g/{group}/thread/{message_id}` | `threads::view` | View thread with replies |
+| `/g/{group}/compose` | `post::compose` | Compose new post form |
+| `/g/{group}/post` | `post::submit` | Submit new post (POST) |
 | `/a/{message_id}` | `article::view` | View individual article |
+| `/a/{message_id}/reply` | `post::reply` | Reply to article (POST) |
+| `/auth/login` | `auth::login` | Provider selection page |
+| `/auth/login/{provider}` | `auth::login_provider` | Initiate login with provider |
+| `/auth/callback/{provider}` | `auth::callback` | OAuth2 callback handler |
+| `/auth/logout` | `auth::logout` | Clear session (POST) |
+| `/privacy` | `privacy::privacy` | Privacy policy page |
 | `/static/*` | `ServeDir` | Static assets (CSS, JS) |
 
 ## Request Flow
@@ -28,9 +36,13 @@ flowchart TD
 ## Code Locations
 
 - Router creation: `src/routes/mod.rs` (`create_router`)
+- Helper functions: `src/routes/mod.rs` (`insert_auth_context`, `can_post_to_group`)
 - Home handlers: `src/routes/home.rs` (`index`, `browse`)
 - Thread handlers: `src/routes/threads.rs` (`list`, `view`)
 - Article handler: `src/routes/article.rs` (`view`)
+- Post handlers: `src/routes/post.rs` (`compose`, `submit`, `reply`)
+- Auth handlers: `src/routes/auth.rs` (`login`, `login_provider`, `callback`, `logout`)
+- Privacy handler: `src/routes/privacy.rs` (`privacy`)
 - Cache constants: `src/config.rs`
 
 ## Cache Strategy
@@ -43,7 +55,10 @@ All Cache-Control headers include `stale-while-revalidate` (SWR) and `stale-if-e
 | Thread views | 2s | 5s | May receive new replies; aggressive revalidation |
 | Thread lists | 2s | 5s | New threads appear frequently; aggressive revalidation |
 | Home/browse | 60s | 30s | Group listings change infrequently |
+| Privacy | 60s | 30s | Static content; uses home cache duration |
 | Static files | 1 day | — | Immutable flag; fingerprint URLs for cache busting |
+| Auth routes | — | — | No caching (stateful session operations) |
+| Post routes | — | — | No caching (stateful form submissions) |
 | Errors | 5s | — | Short TTL prevents thundering herd while allowing recovery |
 
 All non-static responses include `stale-if-error=300` (5 minutes) to serve stale content during backend failures.

@@ -72,7 +72,7 @@ Requests are prioritized to ensure user-facing operations are processed before b
 
 | Priority | Operations | Use Case |
 |----------|------------|----------|
-| **High** | `GetArticle`, `GetThread` | User clicked on content, blocking page render |
+| **High** | `GetArticle`, `PostArticle`, `CheckArticleExists` | User clicked on content or posted, blocking page render |
 | **Normal** | `GetThreads`, `GetGroups` | Page load operations |
 | **Low** | `GetGroupStats`, `GetNewArticles` | Background refresh, prefetch |
 
@@ -143,7 +143,7 @@ This is controlled via thread-local state set by the worker before connecting. T
 Request/response types are defined in `src/nntp/messages.rs`:
 
 - `Priority` enum: `High`, `Normal`, `Low` - determines scheduling order
-- `NntpRequest` enum: `GetArticle`, `GetThreads`, `GetThread`, `GetGroups`, `GetGroupStats`, `GetNewArticles`
+- `NntpRequest` enum: `GetArticle`, `GetThreads`, `GetGroups`, `GetGroupStats`, `GetNewArticles`, `PostArticle`, `CheckArticleExists`
 - `NntpResponse` enum: Corresponding response variants
 - `NntpError`: Wrapper for error messages that can be sent across channels
 
