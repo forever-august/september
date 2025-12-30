@@ -3,6 +3,38 @@
 host = "127.0.0.1"
 port = 3000
 
+# TLS Configuration - HTTPS enabled by default via ACME (Let's Encrypt)
+#
+# September uses ACME by default for automatic TLS certificate provisioning.
+# You MUST configure acme_domains and acme_email for production use, OR
+# explicitly disable TLS with mode = "none" for development.
+#
+# Three modes are available:
+#   - "acme" (default): Automatic Let's Encrypt certificates
+#   - "manual": User-provided certificate and key files
+#   - "none": Plain HTTP (explicit opt-out, for development/reverse proxy)
+[http.tls]
+# Disable TLS for local development
+mode = "none"
+
+# --- ACME mode (Let's Encrypt) - recommended for production ---
+# Uncomment and configure for automatic HTTPS:
+# mode = "acme"
+# acme_domains = ["example.com", "www.example.com"]
+# acme_email = "admin@example.com"
+# acme_production = true  # false = staging (for testing, certs not trusted)
+# acme_cache_dir = "./acme-cache"  # Where to store certificates
+
+# --- Manual mode - use existing certificates ---
+# mode = "manual"
+# cert_path = "/etc/ssl/certs/september.pem"
+# key_path = "/etc/ssl/private/september.key"
+# Note: Send SIGHUP to reload certificates without restart
+
+# --- HTTP redirect (when TLS enabled) ---
+# redirect_http = true   # Redirect HTTP to HTTPS (default: true)
+# redirect_port = 80     # Port for HTTP redirect listener (default: 80)
+
 # Global NNTP settings
 [nntp]
 timeout_seconds = 30

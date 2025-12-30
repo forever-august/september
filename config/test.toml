@@ -3,6 +3,10 @@
 host = "127.0.0.1"
 port = 3001
 
+# Disable TLS for testing
+[http.tls]
+mode = "none"
+
 # Global NNTP settings
 [nntp]
 timeout_seconds = 30

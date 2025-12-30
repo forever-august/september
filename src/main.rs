@@ -6,6 +6,7 @@
 
 mod config;
 mod error;
+mod http;
 mod middleware;
 mod nntp;
 mod oidc;
@@ -13,12 +14,10 @@ mod routes;
 mod state;
 mod templates;
 
-use std::net::SocketAddr;
-
 use clap::Parser;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use config::{AppConfig, DEFAULT_CONFIG_PATH, DEFAULT_LOG_FILTER};
+use config::{AppConfig, TlsMode, DEFAULT_CONFIG_PATH, DEFAULT_LOG_FILTER};
 
 /// September: A web interface to NNTP servers
 #[derive(Parser, Debug)]
@@ -153,14 +152,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create router
     let app = create_router(state);
 
-    // Start server
-    let addr: SocketAddr = format!("{}:{}", config.http.host, config.http.port)
-        .parse()
-        .expect("Invalid http.host or http.port in config");
-    tracing::info!("Starting server at http://{}", addr);
+    // Log server startup info based on TLS mode
+    match &config.http.tls.mode {
+        TlsMode::Acme => {
+            tracing::info!(
+                host = %config.http.host,
+                port = config.http.port,
+                domains = ?config.http.tls.acme_domains,
+                "Starting HTTPS server with ACME (Let's Encrypt)"
+            );
+        }
+        TlsMode::Manual => {
+            tracing::info!(
+                host = %config.http.host,
+                port = config.http.port,
+                cert = config.http.tls.cert_path.as_deref().unwrap_or(""),
+                "Starting HTTPS server with manual certificates"
+            );
+        }
+        TlsMode::None => {
+            tracing::info!(
+                "Starting server at http://{}:{}",
+                config.http.host,
+                config.http.port
+            );
+        }
+    }
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    // Start server using the http module
+    http::start_server(app, &config).await?;
 
     Ok(())
 }

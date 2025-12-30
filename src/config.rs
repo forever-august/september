@@ -246,6 +246,132 @@ pub struct AppConfig {
 pub struct HttpServerConfig {
     pub host: String,
     pub port: u16,
+    /// TLS configuration (ACME by default for secure-by-default)
+    #[serde(default)]
+    pub tls: TlsConfig,
+}
+
+/// TLS mode for HTTP server
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsMode {
+    /// Automatic certificate provisioning via Let's Encrypt (default)
+    #[default]
+    Acme,
+    /// User-provided certificate and key files
+    Manual,
+    /// No TLS - plain HTTP (explicit opt-out)
+    None,
+}
+
+/// Default ACME cache directory
+fn default_acme_cache_dir() -> String {
+    "./acme-cache".to_string()
+}
+
+/// Default to enabling HTTP redirect when TLS is active
+fn default_redirect_http() -> bool {
+    true
+}
+
+/// Default HTTP redirect port
+fn default_redirect_port() -> u16 {
+    80
+}
+
+/// TLS configuration for the HTTP server
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsConfig {
+    /// TLS mode: "acme" (default), "manual", or "none"
+    #[serde(default)]
+    pub mode: TlsMode,
+
+    // === Manual mode options ===
+    /// Path to PEM-encoded certificate file
+    pub cert_path: Option<String>,
+    /// Path to PEM-encoded private key file
+    pub key_path: Option<String>,
+
+    // === ACME mode options ===
+    /// Domain names for certificate (required for ACME mode)
+    #[serde(default)]
+    pub acme_domains: Vec<String>,
+    /// Contact email for Let's Encrypt notifications (required for ACME mode)
+    pub acme_email: Option<String>,
+    /// Directory to cache certificates and account info
+    #[serde(default = "default_acme_cache_dir")]
+    pub acme_cache_dir: String,
+    /// Use Let's Encrypt production (false = staging for testing)
+    #[serde(default)]
+    pub acme_production: bool,
+
+    // === HTTP redirect options ===
+    /// Enable HTTP->HTTPS redirect (default: true when TLS enabled)
+    #[serde(default = "default_redirect_http")]
+    pub redirect_http: bool,
+    /// Port for HTTP redirect listener (default: 80)
+    #[serde(default = "default_redirect_port")]
+    pub redirect_port: u16,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            mode: TlsMode::default(),
+            cert_path: None,
+            key_path: None,
+            acme_domains: Vec::new(),
+            acme_email: None,
+            acme_cache_dir: default_acme_cache_dir(),
+            acme_production: false,
+            redirect_http: default_redirect_http(),
+            redirect_port: default_redirect_port(),
+        }
+    }
+}
+
+impl TlsConfig {
+    /// Validate TLS configuration based on mode
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        match self.mode {
+            TlsMode::Acme => {
+                if self.acme_domains.is_empty() {
+                    return Err(ConfigError::Validation(
+                        "TLS mode 'acme' (default) requires [http.tls] acme_domains. \
+                         Set domains or use mode = 'none' to disable TLS."
+                            .to_string(),
+                    ));
+                }
+                if self.acme_email.is_none() {
+                    return Err(ConfigError::Validation(
+                        "TLS mode 'acme' requires acme_email for Let's Encrypt notifications."
+                            .to_string(),
+                    ));
+                }
+            }
+            TlsMode::Manual => {
+                if self.cert_path.is_none() {
+                    return Err(ConfigError::Validation(
+                        "TLS mode 'manual' requires cert_path.".to_string(),
+                    ));
+                }
+                if self.key_path.is_none() {
+                    return Err(ConfigError::Validation(
+                        "TLS mode 'manual' requires key_path.".to_string(),
+                    ));
+                }
+            }
+            TlsMode::None => {
+                // No validation needed, but we'll log a warning at startup
+            }
+        }
+        Ok(())
+    }
+
+    /// Check if TLS is enabled (any mode except None)
+    pub fn is_enabled(&self) -> bool {
+        self.mode != TlsMode::None
+    }
 }
 
 /// Global NNTP settings that apply to all servers unless overridden
@@ -499,6 +625,9 @@ impl AppConfig {
                 provider.validate()?;
             }
         }
+
+        // Validate TLS configuration
+        config.http.tls.validate()?;
 
         Ok(config)
     }

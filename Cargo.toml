@@ -22,6 +22,10 @@ webpki-roots = "0.26"
 rustls-pki-types = "1"
 async-trait = "0.1"
 
+# HTTPS server with ACME support
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls-acme = { version = "0.11", features = ["axum"] }
+
 # Templating
 tera = "1"
 
