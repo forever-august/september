@@ -14,6 +14,12 @@ from .performance import (
     get_navigation_timing,
     get_resource_timings,
 )
+from .visibility import (
+    VisibilityReport,
+    VisibilityTimer,
+    VisibilityTiming,
+    format_visibility_report,
+)
 
 __all__ = [
     # Models
@@ -30,6 +36,11 @@ __all__ = [
     "get_navigation_timing",
     "get_resource_timings",
     "clear_performance_entries",
+    # Visibility
+    "VisibilityTiming",
+    "VisibilityTimer",
+    "VisibilityReport",
+    "format_visibility_report",
     # Analysis
     "analyze_failure",
     "format_failure_report",

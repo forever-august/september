@@ -42,10 +42,14 @@ from testlogging import (
     PerformanceReport,
     RouteTiming,
     TestLogCapture,
+    VisibilityReport,
+    VisibilityTimer,
+    VisibilityTiming,
     clear_performance_entries,
     fetch_service_logs,
     format_failure_report,
     format_performance_report,
+    format_visibility_report,
     get_navigation_timing,
     get_resource_timings,
 )
@@ -107,6 +111,8 @@ def pytest_generate_tests(metafunc):
 
 # Global performance report for the session (per-worker in parallel mode)
 _performance_report: PerformanceReport | None = None
+# Global visibility report for the session (per-worker in parallel mode)
+_visibility_report: VisibilityReport | None = None
 # Current test name for attribution
 _current_test_name: str = ""
 # Reference to browser for performance capture
@@ -115,6 +121,8 @@ _session_browser: WebDriver | None = None
 _timing_tmpdir: Path | None = None
 # Collected timings from workers (master only)
 _worker_timings: list[RouteTiming] = []
+# Collected visibility timings from workers (master only)
+_worker_visibility_timings: list[VisibilityTiming] = []
 
 
 def pytest_configure(config):
@@ -141,10 +149,12 @@ def pytest_configure_node(node):
 
 def pytest_testnodedown(node, error):
     """Called on xdist master when a worker node finishes. Collect its timings."""
-    global _timing_tmpdir, _worker_timings
+    global _timing_tmpdir, _worker_timings, _worker_visibility_timings
 
     if _timing_tmpdir and _timing_tmpdir.exists():
         worker_id = node.workerinput.get("workerid", "unknown")
+
+        # Collect route timings
         timing_file = _timing_tmpdir / f"timings_{worker_id}.json"
         if timing_file.exists():
             try:
@@ -162,11 +172,22 @@ def pytest_testnodedown(node, error):
             except Exception:
                 pass
 
+        # Collect visibility timings
+        visibility_file = _timing_tmpdir / f"visibility_{worker_id}.json"
+        if visibility_file.exists():
+            try:
+                data = json.loads(visibility_file.read_text())
+                for t in data:
+                    _worker_visibility_timings.append(VisibilityTiming.from_dict(t))
+            except Exception:
+                pass
+
 
 def pytest_sessionstart(session):
     """Initialize performance tracking at the start of the test session."""
-    global _performance_report
+    global _performance_report, _visibility_report
     _performance_report = PerformanceReport(session_start=datetime.now(timezone.utc))
+    _visibility_report = VisibilityReport()
 
 
 def pytest_runtest_setup(item):
@@ -209,40 +230,49 @@ def pytest_runtest_makereport(item, call):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """Print the performance report at the end of the test session."""
-    global _performance_report, _timing_tmpdir, _worker_timings
+    """Print the performance and visibility reports at the end of the test session."""
+    global _performance_report, _visibility_report
+    global _timing_tmpdir, _worker_timings, _worker_visibility_timings
 
     if is_xdist_worker():
-        # Worker: write timings to a file for master to collect
-        if (
-            _performance_report is not None
-            and _performance_report.route_timings
-            and _timing_tmpdir
-        ):
+        # Worker: write timings to files for master to collect
+        if _timing_tmpdir:
             worker_id = get_worker_id()
-            timing_file = _timing_tmpdir / f"timings_{worker_id}.json"
-            timings_data = [
-                {
-                    "url": t.url,
-                    "method": t.method,
-                    "duration_ms": t.duration_ms,
-                    "ttfb_ms": t.ttfb_ms,
-                    "test_name": t.test_name,
-                }
-                for t in _performance_report.route_timings
-            ]
-            timing_file.write_text(json.dumps(timings_data))
+
+            # Write route timings
+            if _performance_report is not None and _performance_report.route_timings:
+                timing_file = _timing_tmpdir / f"timings_{worker_id}.json"
+                timings_data = [
+                    {
+                        "url": t.url,
+                        "method": t.method,
+                        "duration_ms": t.duration_ms,
+                        "ttfb_ms": t.ttfb_ms,
+                        "test_name": t.test_name,
+                    }
+                    for t in _performance_report.route_timings
+                ]
+                timing_file.write_text(json.dumps(timings_data))
+
+            # Write visibility timings
+            if _visibility_report is not None and _visibility_report.timings:
+                visibility_file = _timing_tmpdir / f"visibility_{worker_id}.json"
+                visibility_data = [t.to_dict() for t in _visibility_report.timings]
+                visibility_file.write_text(json.dumps(visibility_data))
     else:
-        # Master or non-parallel: aggregate and print report
+        # Master or non-parallel: aggregate and print reports
         if _performance_report is None:
             _performance_report = PerformanceReport(
                 session_start=datetime.now(timezone.utc)
             )
+        if _visibility_report is None:
+            _visibility_report = VisibilityReport()
 
         _performance_report.session_end = datetime.now(timezone.utc)
 
         # Combine local timings (non-parallel) with worker timings (parallel)
         all_timings = list(_performance_report.route_timings) + _worker_timings
+        all_visibility = list(_visibility_report.timings) + _worker_visibility_timings
 
         # Clean up temp dir if it exists
         if _timing_tmpdir and _timing_tmpdir.exists():
@@ -250,11 +280,17 @@ def pytest_sessionfinish(session, exitstatus):
 
             shutil.rmtree(_timing_tmpdir, ignore_errors=True)
 
+        # Print route performance report
         if all_timings:
             _performance_report.route_timings = all_timings
             report = format_performance_report(_performance_report)
-            # Print to stdout (pytest captures this)
             print(f"\n{report}")
+
+        # Print visibility latency report
+        if all_visibility:
+            _visibility_report.timings = all_visibility
+            visibility_report = format_visibility_report(_visibility_report)
+            print(f"\n{visibility_report}")
 
 
 # =============================================================================
@@ -439,6 +475,45 @@ def compose_page_unauth(browser: WebDriver) -> Callable[[str], ComposePage]:
 def dex_page(browser: WebDriver) -> DexLoginPage:
     """Fixture for DexLoginPage."""
     return DexLoginPage(browser)
+
+
+# =============================================================================
+# Performance Measurement Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def visibility_timer(
+    authenticated_browser: WebDriver,
+) -> Generator[VisibilityTimer, None, None]:
+    """
+    Fixture for measuring post/reply visibility latency.
+
+    Provides a VisibilityTimer that can be used to measure the time between
+    submitting a post/reply and when it becomes visible on the page.
+
+    Usage:
+        def test_post_visibility(self, compose_page, visibility_timer):
+            page = compose_page("test.general")
+            unique_id = str(uuid.uuid4())[:8]
+
+            page.fill_subject(f"Test {unique_id}")
+            page.fill_body(f"Content {unique_id}")
+
+            visibility_timer.mark_submit("post", "test.general", unique_id)
+            page.submit()
+
+            timing = visibility_timer.wait_for_visible(unique_id, ".thread-title")
+            # timing.latency_ms contains the measured latency
+    """
+    global _visibility_report, _current_test_name
+
+    timer = VisibilityTimer(authenticated_browser, _current_test_name)
+    yield timer
+
+    # After test completes, collect any recorded timing
+    if timer.timing is not None and _visibility_report is not None:
+        _visibility_report.timings.append(timer.timing)
 
 
 # =============================================================================

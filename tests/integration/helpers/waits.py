@@ -8,7 +8,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 # Default timeouts (seconds)
 TIMEOUT_DEFAULT = 3
 TIMEOUT_OIDC = 5
-POLL_FREQUENCY = 0.2
+POLL_FREQUENCY = 0.01
 
 
 def create_wait(driver: WebDriver, timeout: float = TIMEOUT_DEFAULT) -> WebDriverWait:
