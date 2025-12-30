@@ -20,12 +20,13 @@ use axum::{
     Router,
 };
 use http::header::{HeaderValue, CACHE_CONTROL};
-use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::config::{
     CACHE_CONTROL_ARTICLE, CACHE_CONTROL_HOME, CACHE_CONTROL_STATIC, CACHE_CONTROL_THREAD_LIST,
-    CACHE_CONTROL_THREAD_VIEW, STATIC_DIR,
+    CACHE_CONTROL_THREAD_VIEW,
 };
+use crate::http::static_files::create_static_service;
 use crate::middleware::{auth_layer, request_id_layer, CurrentUser};
 use crate::state::AppState;
 
@@ -122,9 +123,9 @@ pub fn create_router(state: AppState) -> Router {
             HeaderValue::from_static(CACHE_CONTROL_HOME),
         ));
 
-    // Static files - long cache with immutable hint
+    // Static files - long cache with immutable hint, with theme fallback
     let static_routes = Router::new()
-        .nest_service("/static", ServeDir::new(STATIC_DIR))
+        .nest_service("/static", create_static_service(&state.config.theme))
         .layer(SetResponseHeaderLayer::if_not_present(
             CACHE_CONTROL,
             HeaderValue::from_static(CACHE_CONTROL_STATIC),

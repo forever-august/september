@@ -6,7 +6,7 @@
 
 use const_format::formatcp;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // =============================================================================
 // HTTP Response Cache Control
@@ -201,13 +201,7 @@ pub const POST_POLL_INTERVAL_MS: u64 = 10;
 // =============================================================================
 
 /// Default configuration file path
-pub const DEFAULT_CONFIG_PATH: &str = "config/default.toml";
-
-/// Glob pattern for template files
-pub const TEMPLATE_GLOB: &str = "templates/**/*";
-
-/// Directory for static files
-pub const STATIC_DIR: &str = "static";
+pub const DEFAULT_CONFIG_PATH: &str = "dist/config/default.toml";
 
 /// Default subject for articles without a subject
 pub const DEFAULT_SUBJECT: &str = "(no subject)";
@@ -236,6 +230,9 @@ pub struct AppConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// Theme configuration
+    #[serde(default)]
+    pub theme: ThemeConfig,
     /// OpenID Connect authentication (optional)
     #[serde(default)]
     pub oidc: Option<OidcConfig>,
@@ -593,6 +590,100 @@ impl LoggingConfig {
     }
 }
 
+/// Theme configuration for templates and static assets.
+///
+/// Themes are stored in `{themes_dir}/{name}/` with `templates/` and `static/`
+/// subdirectories. The active theme can selectively override files from the
+/// default theme - any files not present fall back to the default theme.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThemeConfig {
+    /// Active theme name (default: "default")
+    #[serde(default = "ThemeConfig::default_name")]
+    pub name: String,
+
+    /// Base directory containing themes.
+    /// Production default: "/etc/september/themes"
+    /// Development: typically "dist/themes"
+    #[serde(default = "ThemeConfig::default_themes_dir")]
+    pub themes_dir: String,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            name: Self::default_name(),
+            themes_dir: Self::default_themes_dir(),
+        }
+    }
+}
+
+impl ThemeConfig {
+    fn default_name() -> String {
+        "default".to_string()
+    }
+
+    fn default_themes_dir() -> String {
+        "/etc/september/themes".to_string()
+    }
+
+    /// Get path to templates for a specific theme.
+    pub fn templates_path(&self, theme_name: &str) -> PathBuf {
+        Path::new(&self.themes_dir)
+            .join(theme_name)
+            .join("templates")
+    }
+
+    /// Get path to static files for a specific theme.
+    pub fn static_path(&self, theme_name: &str) -> PathBuf {
+        Path::new(&self.themes_dir).join(theme_name).join("static")
+    }
+
+    /// Validate the theme configuration.
+    ///
+    /// Checks that the themes directory exists and contains the required
+    /// default theme and active theme directories with templates and static subdirs.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let themes_dir = Path::new(&self.themes_dir);
+        if !themes_dir.exists() {
+            return Err(ConfigError::Validation(format!(
+                "Themes directory not found: {}",
+                self.themes_dir
+            )));
+        }
+
+        // Validate default theme exists
+        let default_templates = self.templates_path("default");
+        if !default_templates.exists() {
+            return Err(ConfigError::Validation(format!(
+                "Default theme templates not found: {}",
+                default_templates.display()
+            )));
+        }
+
+        let default_static = self.static_path("default");
+        if !default_static.exists() {
+            return Err(ConfigError::Validation(format!(
+                "Default theme static files not found: {}",
+                default_static.display()
+            )));
+        }
+
+        // If using a non-default theme, validate it exists
+        if self.name != "default" {
+            let theme_dir = themes_dir.join(&self.name);
+            if !theme_dir.exists() {
+                return Err(ConfigError::Validation(format!(
+                    "Theme '{}' not found at: {}",
+                    self.name,
+                    theme_dir.display()
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 impl AppConfig {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path)?;
@@ -628,6 +719,9 @@ impl AppConfig {
 
         // Validate TLS configuration
         config.http.tls.validate()?;
+
+        // Validate theme configuration
+        config.theme.validate()?;
 
         Ok(config)
     }

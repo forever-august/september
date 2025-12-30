@@ -77,3 +77,12 @@ max_thread_lists = 100
 [logging]
 # Log format: "text" (human-readable, default) or "json" (structured for production)
 format = "text"
+
+# Theme configuration
+[theme]
+# Active theme name (default: "default")
+name = "default"
+# Base directory containing themes
+# Production: "/etc/september/themes" (default)
+# Development: "dist/themes"
+themes_dir = "dist/themes"

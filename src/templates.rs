@@ -1,20 +1,56 @@
 //! Tera template initialization and custom filters.
 //!
 //! Sets up the Tera template engine with custom filters for text processing,
-//! date formatting, and article preview generation.
+//! date formatting, and article preview generation. Supports theme layering
+//! where the active theme can selectively override templates from the default theme.
 
 use chrono::{DateTime, Utc};
 use tera::Tera;
 
 use crate::config::{
-    DEFAULT_PREVIEW_LINES, DEFAULT_TRUNCATE_WORDS, PREVIEW_HARD_LIMIT, SECONDS_PER_DAY,
-    SECONDS_PER_HOUR, SECONDS_PER_MINUTE, SECONDS_PER_MONTH, SECONDS_PER_YEAR, TEMPLATE_GLOB,
+    ThemeConfig, DEFAULT_PREVIEW_LINES, DEFAULT_TRUNCATE_WORDS, PREVIEW_HARD_LIMIT,
+    SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, SECONDS_PER_MONTH, SECONDS_PER_YEAR,
 };
 use crate::error::AppError;
 
-/// Initialize the Tera template engine
-pub fn init_templates() -> Result<Tera, AppError> {
-    let mut tera = Tera::new(TEMPLATE_GLOB)?;
+/// Initialize the Tera template engine with theme support.
+///
+/// Loads templates from the default theme first, then overlays the active theme's
+/// templates on top (if different from default). This allows themes to selectively
+/// override individual templates while falling back to the default for any
+/// templates not provided by the theme.
+pub fn init_templates(theme: &ThemeConfig) -> Result<Tera, AppError> {
+    let default_path = theme.templates_path("default");
+    let default_glob = format!("{}/**/*", default_path.display());
+
+    // Load default theme templates first
+    let mut tera = Tera::new(&default_glob).map_err(|e| {
+        AppError::Internal(format!(
+            "Failed to load default templates from {}: {}",
+            default_path.display(),
+            e
+        ))
+    })?;
+
+    // If active theme is not default, overlay its templates
+    if theme.name != "default" {
+        let theme_path = theme.templates_path(&theme.name);
+        let theme_glob = format!("{}/**/*", theme_path.display());
+        let theme_tera = Tera::new(&theme_glob).map_err(|e| {
+            AppError::Internal(format!(
+                "Failed to load theme '{}' templates from {}: {}",
+                theme.name,
+                theme_path.display(),
+                e
+            ))
+        })?;
+        tera.extend(&theme_tera).map_err(|e| {
+            AppError::Internal(format!(
+                "Failed to merge theme '{}' templates: {}",
+                theme.name, e
+            ))
+        })?;
+    }
 
     // Add custom filters
     tera.register_filter("truncate_words", truncate_words_filter);

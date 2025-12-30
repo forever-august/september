@@ -99,9 +99,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Initialize Tera templates
-    let tera = init_templates()?;
-    tracing::info!("Initialized templates");
+    // Initialize Tera templates with theme support
+    let tera = init_templates(&config.theme)?;
+    tracing::info!(
+        theme = %config.theme.name,
+        themes_dir = %config.theme.themes_dir,
+        "Initialized templates"
+    );
 
     // Initialize federated NNTP service with caching and worker pools
     let nntp_service = NntpFederatedService::new(&config);

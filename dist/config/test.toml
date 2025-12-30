@@ -33,3 +33,8 @@ threads_ttl_seconds = 60       # Shorter TTL for testing
 groups_ttl_seconds = 300
 max_articles = 1000
 max_thread_lists = 50
+
+# Theme configuration
+[theme]
+name = "default"
+themes_dir = "dist/themes"

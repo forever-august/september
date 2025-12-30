@@ -13,5 +13,6 @@
 mod redirect;
 mod server;
 mod shutdown;
+pub mod static_files;
 
 pub use server::start_server;

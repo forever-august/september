@@ -44,6 +44,11 @@ max_thread_lists = 10
 [logging]
 format = "json"
 
+# Theme configuration - use FHS path for production-like testing
+[theme]
+name = "default"
+themes_dir = "/etc/september/themes"
+
 # OIDC configuration - connects to Dex
 [oidc]
 cookie_secret = "env:OIDC_COOKIE_SECRET"
