@@ -24,13 +24,14 @@ use tracing::{instrument, Span};
 
 use crate::config::{
     NntpServerConfig, NntpSettings, DEFAULT_SUBJECT, NNTP_MAX_ARTICLES_HEAD_FALLBACK,
-    NNTP_MAX_ARTICLES_PER_REQUEST, NNTP_PRIORITY_AGING_SECS,
-    NNTP_RECONNECT_DELAY_SECS,
+    NNTP_MAX_ARTICLES_PER_REQUEST, NNTP_PRIORITY_AGING_SECS, NNTP_RECONNECT_DELAY_SECS,
 };
 
 use super::messages::{GroupStatsView, NntpError, NntpRequest, NntpResponse};
 use super::tls::NntpStream;
-use super::{build_threads_from_hdr, build_threads_from_overview, parse_article, GroupView, HdrArticleData};
+use super::{
+    build_threads_from_hdr, build_threads_from_overview, parse_article, GroupView, HdrArticleData,
+};
 
 /// Method to use for fetching thread data
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -152,46 +153,57 @@ impl ServerCapabilities {
     }
 }
 
+/// Priority queue receivers for the worker.
+///
+/// Groups the three priority-level queue receivers that workers pull requests from.
+pub struct WorkerQueues {
+    /// High-priority request queue (user-facing: GetArticle, PostArticle)
+    pub high: Receiver<NntpRequest>,
+    /// Normal-priority request queue (page load: GetThreads, GetGroups)
+    pub normal: Receiver<NntpRequest>,
+    /// Low-priority request queue (background: GetGroupStats, GetNewArticles)
+    pub low: Receiver<NntpRequest>,
+}
+
+/// Shared counters for tracking worker pool status.
+///
+/// These atomic counters are shared across all workers in a service to track
+/// aggregate connection and posting capability status.
+pub struct WorkerCounters {
+    /// Count of workers with active connections
+    pub connected: Arc<AtomicUsize>,
+    /// Count of workers whose connections allow posting
+    pub posting: Arc<AtomicUsize>,
+}
+
 /// Worker that processes NNTP requests from priority queues
 pub struct NntpWorker {
     id: usize,
     server_name: String,
     server_config: NntpServerConfig,
     global_settings: NntpSettings,
-    /// High-priority request queue (user-facing: GetArticle, GetThread)
-    high_rx: Receiver<NntpRequest>,
-    /// Normal-priority request queue (page load: GetThreads, GetGroups)
-    normal_rx: Receiver<NntpRequest>,
-    /// Low-priority request queue (background: GetGroupStats, GetNewArticles)
-    low_rx: Receiver<NntpRequest>,
-    /// Shared counter of connected workers (for service-level tracking)
-    connected_workers: Arc<AtomicUsize>,
-    /// Shared counter of workers with posting capability
-    posting_workers: Arc<AtomicUsize>,
+    /// Priority queue receivers
+    queues: WorkerQueues,
+    /// Shared worker pool counters
+    counters: WorkerCounters,
 }
 
 impl NntpWorker {
-    /// Create a new worker with priority queue receivers
+    /// Create a new worker with priority queue receivers and shared counters
     pub fn new(
         id: usize,
         server_config: NntpServerConfig,
         global_settings: NntpSettings,
-        high_rx: Receiver<NntpRequest>,
-        normal_rx: Receiver<NntpRequest>,
-        low_rx: Receiver<NntpRequest>,
-        connected_workers: Arc<AtomicUsize>,
-        posting_workers: Arc<AtomicUsize>,
+        queues: WorkerQueues,
+        counters: WorkerCounters,
     ) -> Self {
         Self {
             id,
             server_name: server_config.name.clone(),
             server_config,
             global_settings,
-            high_rx,
-            normal_rx,
-            low_rx,
-            connected_workers,
-            posting_workers,
+            queues,
+            counters,
         }
     }
 
@@ -212,7 +224,7 @@ impl NntpWorker {
                 last_low_process.elapsed().as_secs() >= NNTP_PRIORITY_AGING_SECS;
 
             if should_check_aging {
-                if let Ok(req) = self.low_rx.try_recv() {
+                if let Ok(req) = self.queues.low.try_recv() {
                     *last_low_process = Instant::now();
                     tracing::trace!(
                         priority = "low",
@@ -224,17 +236,17 @@ impl NntpWorker {
             }
 
             // Try high priority (non-blocking)
-            if let Ok(req) = self.high_rx.try_recv() {
+            if let Ok(req) = self.queues.high.try_recv() {
                 return Ok(req);
             }
 
             // Try normal priority (non-blocking)
-            if let Ok(req) = self.normal_rx.try_recv() {
+            if let Ok(req) = self.queues.normal.try_recv() {
                 return Ok(req);
             }
 
             // Try low priority (non-blocking)
-            if let Ok(req) = self.low_rx.try_recv() {
+            if let Ok(req) = self.queues.low.try_recv() {
                 *last_low_process = Instant::now();
                 return Ok(req);
             }
@@ -244,9 +256,9 @@ impl NntpWorker {
             tokio::select! {
                 biased;
 
-                result = self.high_rx.recv() => return result,
-                result = self.normal_rx.recv() => return result,
-                result = self.low_rx.recv() => {
+                result = self.queues.high.recv() => return result,
+                result = self.queues.normal.recv() => return result,
+                result = self.queues.low.recv() => {
                     *last_low_process = Instant::now();
                     return result;
                 }
@@ -266,9 +278,8 @@ impl NntpWorker {
         loop {
             // Connect/reconnect to NNTP server
             let addr = format!("{}:{}", self.server_config.host, self.server_config.port);
-            let connect_timeout = Duration::from_secs(
-                self.server_config.timeout_seconds(&self.global_settings)
-            );
+            let connect_timeout =
+                Duration::from_secs(self.server_config.timeout_seconds(&self.global_settings));
             let has_credentials = self.server_config.has_credentials();
             let requires_tls = self.server_config.requires_tls_for_credentials();
 
@@ -276,29 +287,36 @@ impl NntpWorker {
             super::tls::set_tls_required(requires_tls);
 
             // Connect using NntpClient with our TLS-aware NntpStream
-            let mut client = match timeout(connect_timeout, NntpClient::<NntpStream>::connect(&addr)).await {
-                Ok(Ok(client)) => {
-                    let tls_status = if super::tls::last_connection_was_tls() { "TLS" } else { "plain TCP" };
-                    tracing::info!(tls = %tls_status, "Connected to NNTP server");
-                    client
-                }
-                Ok(Err(e)) => {
-                    tracing::error!(error = %e, "Failed to connect");
-                    tokio::time::sleep(Duration::from_secs(NNTP_RECONNECT_DELAY_SECS)).await;
-                    continue;
-                }
-                Err(_) => {
-                    tracing::error!("Connection timeout");
-                    tokio::time::sleep(Duration::from_secs(NNTP_RECONNECT_DELAY_SECS)).await;
-                    continue;
-                }
-            };
+            let mut client =
+                match timeout(connect_timeout, NntpClient::<NntpStream>::connect(&addr)).await {
+                    Ok(Ok(client)) => {
+                        let tls_status = if super::tls::last_connection_was_tls() {
+                            "TLS"
+                        } else {
+                            "plain TCP"
+                        };
+                        tracing::info!(tls = %tls_status, "Connected to NNTP server");
+                        client
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!(error = %e, "Failed to connect");
+                        tokio::time::sleep(Duration::from_secs(NNTP_RECONNECT_DELAY_SECS)).await;
+                        continue;
+                    }
+                    Err(_) => {
+                        tracing::error!("Connection timeout");
+                        tokio::time::sleep(Duration::from_secs(NNTP_RECONNECT_DELAY_SECS)).await;
+                        continue;
+                    }
+                };
 
             // Authenticate if credentials are configured
             // Note: TLS is enforced during connect unless allow_insecure_auth is set
             if has_credentials {
                 if !requires_tls {
-                    tracing::warn!("Authenticating over plaintext connection (allow_insecure_auth is set)");
+                    tracing::warn!(
+                        "Authenticating over plaintext connection (allow_insecure_auth is set)"
+                    );
                 }
                 let username = self.server_config.username.as_ref().unwrap();
                 let password = self.server_config.password.as_ref().unwrap();
@@ -358,7 +376,8 @@ impl NntpWorker {
                         Ok(format) => {
                             // Check if References is in the overview format
                             // Format fields are like "Subject:", "From:", "References:", etc.
-                            capabilities.references_in_overview = format.iter()
+                            capabilities.references_in_overview = format
+                                .iter()
                                 .any(|field| field.eq_ignore_ascii_case("References:"));
                             tracing::trace!(
                                 fields = ?format.iter().collect::<Vec<_>>(),
@@ -385,10 +404,10 @@ impl NntpWorker {
             capabilities.greeting_allows_post = client.is_posting_allowed();
 
             // Increment connection counters now that setup is complete
-            self.connected_workers.fetch_add(1, Ordering::Relaxed);
+            self.counters.connected.fetch_add(1, Ordering::Relaxed);
             let can_post = capabilities.can_post();
             if can_post {
-                self.posting_workers.fetch_add(1, Ordering::Relaxed);
+                self.counters.posting.fetch_add(1, Ordering::Relaxed);
             }
 
             tracing::info!(
@@ -406,9 +425,9 @@ impl NntpWorker {
                     Ok(req) => req,
                     Err(_) => {
                         // Decrement counters before shutting down
-                        self.connected_workers.fetch_sub(1, Ordering::Relaxed);
+                        self.counters.connected.fetch_sub(1, Ordering::Relaxed);
                         if can_post {
-                            self.posting_workers.fetch_sub(1, Ordering::Relaxed);
+                            self.counters.posting.fetch_sub(1, Ordering::Relaxed);
                         }
                         tracing::info!("Request channels closed, worker shutting down");
                         return;
@@ -417,14 +436,16 @@ impl NntpWorker {
 
                 // Log queue depths at trace level for monitoring
                 tracing::trace!(
-                    high_depth = self.high_rx.len(),
-                    normal_depth = self.normal_rx.len(),
-                    low_depth = self.low_rx.len(),
+                    high_depth = self.queues.high.len(),
+                    normal_depth = self.queues.normal.len(),
+                    low_depth = self.queues.low.len(),
                     priority = %request.priority(),
                     "Processing request"
                 );
 
-                let result = self.handle_request(&mut client, &request, &capabilities).await;
+                let result = self
+                    .handle_request(&mut client, &request, &capabilities)
+                    .await;
 
                 // Check if this was a connection error that requires reconnect
                 let should_reconnect = result.is_err();
@@ -434,9 +455,9 @@ impl NntpWorker {
 
                 if should_reconnect {
                     // Decrement counters before reconnecting
-                    self.connected_workers.fetch_sub(1, Ordering::Relaxed);
+                    self.counters.connected.fetch_sub(1, Ordering::Relaxed);
                     if can_post {
-                        self.posting_workers.fetch_sub(1, Ordering::Relaxed);
+                        self.counters.posting.fetch_sub(1, Ordering::Relaxed);
                     }
                     tracing::warn!("Connection error, will reconnect");
                     break;
@@ -458,7 +479,9 @@ impl NntpWorker {
         capabilities: &ServerCapabilities,
     ) -> Result<NntpResponse, NntpError> {
         let start = Instant::now();
-        let result = self.handle_request_inner(client, request, capabilities).await;
+        let result = self
+            .handle_request_inner(client, request, capabilities)
+            .await;
         tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         result
     }
@@ -481,24 +504,34 @@ impl NntpWorker {
                 let mut last_error: Option<String> = None;
                 for method_name in list_methods {
                     let result = match method_name {
-                        "LIST ACTIVE" => {
-                            client.list_active(None).await
-                                .map(|groups| groups.iter().map(|g| GroupView {
-                                    name: g.name.clone(),
-                                    description: None,
-                                    article_count: None,
-                                }).collect::<Vec<_>>())
-                                .map_err(|e| e.to_string())
-                        }
-                        "LIST NEWSGROUPS" => {
-                            client.list_newsgroups(None).await
-                                .map(|groups| groups.iter().map(|g| GroupView {
-                                    name: g.name.clone(),
-                                    description: Some(g.description.clone()),
-                                    article_count: None,
-                                }).collect::<Vec<_>>())
-                                .map_err(|e| e.to_string())
-                        }
+                        "LIST ACTIVE" => client
+                            .list_active(None)
+                            .await
+                            .map(|groups| {
+                                groups
+                                    .iter()
+                                    .map(|g| GroupView {
+                                        name: g.name.clone(),
+                                        description: None,
+                                        article_count: None,
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .map_err(|e| e.to_string()),
+                        "LIST NEWSGROUPS" => client
+                            .list_newsgroups(None)
+                            .await
+                            .map(|groups| {
+                                groups
+                                    .iter()
+                                    .map(|g| GroupView {
+                                        name: g.name.clone(),
+                                        description: Some(g.description.clone()),
+                                        article_count: None,
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .map_err(|e| e.to_string()),
                         _ => continue,
                     };
 
@@ -575,7 +608,8 @@ impl NntpWorker {
                     }
                     ThreadFetchMethod::Head => {
                         // Fetch HEAD for each article (slowest fallback)
-                        self.fetch_threads_via_head(client, start, stats.last).await?
+                        self.fetch_threads_via_head(client, start, stats.last)
+                            .await?
                     }
                 };
 
@@ -624,10 +658,11 @@ impl NntpWorker {
                 // Get the date header for the last article
                 let last_article_date = if stats.last > 0 {
                     // Use HDR command to get just the Date header for the last article
-                    match client.hdr("Date".to_string(), Some(stats.last.to_string())).await {
-                        Ok(headers) => {
-                            headers.first().map(|h| h.value.clone())
-                        }
+                    match client
+                        .hdr("Date".to_string(), Some(stats.last.to_string()))
+                        .await
+                    {
+                        Ok(headers) => headers.first().map(|h| h.value.clone()),
                         Err(e) => {
                             tracing::debug!(
                                 %group,
@@ -635,11 +670,15 @@ impl NntpWorker {
                                 "HDR command failed, trying HEAD fallback"
                             );
                             // Fallback: fetch full headers with HEAD command
-                            match client.head(nntp_rs::ArticleSpec::number_in_group(group, stats.last)).await {
+                            match client
+                                .head(nntp_rs::ArticleSpec::number_in_group(group, stats.last))
+                                .await
+                            {
                                 Ok(headers_raw) => {
                                     // Parse Date header from raw headers
                                     let headers_str = String::from_utf8_lossy(&headers_raw);
-                                    headers_str.lines()
+                                    headers_str
+                                        .lines()
                                         .find(|line| line.to_lowercase().starts_with("date:"))
                                         .map(|line| line[5..].trim().to_string())
                                 }
@@ -664,7 +703,11 @@ impl NntpWorker {
                 }))
             }
 
-            NntpRequest::GetNewArticles { group, since_article_number, .. } => {
+            NntpRequest::GetNewArticles {
+                group,
+                since_article_number,
+                ..
+            } => {
                 Span::current().record("operation", "get_new_articles");
                 tracing::debug!(%group, %since_article_number, "Fetching new articles");
 
@@ -714,17 +757,17 @@ impl NntpWorker {
                 // Format the article for POST command
                 // Headers is a Vec<(String, String)> of header name/value pairs
                 // Body is the article body text
-                
+
                 let mut article_lines: Vec<String> = Vec::new();
-                
+
                 // Add headers
                 for (name, value) in headers {
                     article_lines.push(format!("{}: {}", name, value));
                 }
-                
+
                 // Blank line between headers and body
                 article_lines.push(String::new());
-                
+
                 // Add body lines
                 for line in body.lines() {
                     // Dot-stuffing: lines starting with "." get an extra "." prepended
@@ -734,17 +777,41 @@ impl NntpWorker {
                         article_lines.push(line.to_string());
                     }
                 }
-                
+
                 // Join all lines with CRLF for the nntp_rs client's post method
                 let article_content = article_lines.join("\r\n");
-                
+
                 // Use the nntp_rs client's post method
                 client
                     .post(article_content)
                     .await
                     .map_err(|e| NntpError(e.to_string()))?;
-                
+
                 Ok(NntpResponse::PostResult)
+            }
+
+            NntpRequest::CheckArticleExists { message_id, .. } => {
+                Span::current().record("operation", "check_article_exists");
+                tracing::debug!(%message_id, "Checking article existence with STAT");
+
+                match client
+                    .stat(nntp_rs::ArticleSpec::MessageId(message_id.to_string()))
+                    .await
+                {
+                    Ok(_) => Ok(NntpResponse::ArticleExists(true)),
+                    Err(e) => {
+                        // Check if this is a "not found" error (430 or 423)
+                        let err_str = e.to_string();
+                        if err_str.contains("430")
+                            || err_str.contains("423")
+                            || err_str.to_lowercase().contains("no such article")
+                        {
+                            Ok(NntpResponse::ArticleExists(false))
+                        } else {
+                            Err(NntpError(err_str))
+                        }
+                    }
+                }
             }
         }
     }
@@ -823,18 +890,12 @@ impl NntpWorker {
             }
 
             let references = refs_map.get(&entry.article).cloned();
-                let subject = subjects_map
-                    .get(&entry.article)
-                    .cloned()
-                    .unwrap_or_else(|| DEFAULT_SUBJECT.to_string());
-            let from = froms_map
+            let subject = subjects_map
                 .get(&entry.article)
                 .cloned()
-                .unwrap_or_default();
-            let date = dates_map
-                .get(&entry.article)
-                .cloned()
-                .unwrap_or_default();
+                .unwrap_or_else(|| DEFAULT_SUBJECT.to_string());
+            let from = froms_map.get(&entry.article).cloned().unwrap_or_default();
+            let date = dates_map.get(&entry.article).cloned().unwrap_or_default();
 
             articles.push(HdrArticleData {
                 message_id: entry.value.clone(),
@@ -879,10 +940,13 @@ impl NntpWorker {
         // Actually, we'll use the raw number approach via GroupNumber
         for article_num in actual_start..=end {
             // Use GroupNumber with empty string - the number is what matters on the wire
-            match client.head(nntp_rs::ArticleSpec::GroupNumber {
-                group: String::new(),
-                article_number: article_num,
-            }).await {
+            match client
+                .head(nntp_rs::ArticleSpec::GroupNumber {
+                    group: String::new(),
+                    article_number: article_num,
+                })
+                .await
+            {
                 Ok(headers_raw) => {
                     let headers_str = String::from_utf8_lossy(&headers_raw);
 

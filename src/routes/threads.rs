@@ -10,6 +10,7 @@ use axum::{
 use serde::Deserialize;
 use tracing::instrument;
 
+use super::{can_post_to_group, insert_auth_context};
 use crate::error::{AppError, AppErrorResponse, ResultExt};
 use crate::middleware::{CurrentUser, RequestId};
 use crate::state::AppState;
@@ -52,11 +53,7 @@ pub async fn list(
     });
 
     // Check if user can post to this group
-    let can_post = if current_user.0.as_ref().map(|u| u.email.is_some()).unwrap_or(false) {
-        state.nntp.can_post_to_group(&group).await
-    } else {
-        false
-    };
+    let can_post = can_post_to_group(&current_user, &state, &group).await;
 
     let mut context = tera::Context::new();
     context.insert("config", &state.config.ui);
@@ -64,14 +61,8 @@ pub async fn list(
     context.insert("threads", &threads);
     context.insert("pagination", &pagination);
     context.insert("can_post", &can_post);
-    
-    // Auth context for header
-    context.insert("oidc_enabled", &state.oidc.is_some());
-    if let Some(user) = current_user.0.as_ref() {
-        context.insert("user", &serde_json::json!({
-            "display_name": user.display_name(),
-        }));
-    }
+
+    insert_auth_context(&mut context, &state, &current_user, false);
 
     let html = state
         .tera
@@ -114,16 +105,18 @@ pub async fn view(
     // Fetch thread with paginated article bodies
     let (thread, comments, pagination) = state
         .nntp
-        .get_thread_paginated(&path.group, &path.message_id, page, per_page, collapse_threshold)
+        .get_thread_paginated(
+            &path.group,
+            &path.message_id,
+            page,
+            per_page,
+            collapse_threshold,
+        )
         .await
         .with_request_id(&request_id)?;
 
     // Check if user can post to this group
-    let can_post = if current_user.0.as_ref().map(|u| u.email.is_some()).unwrap_or(false) {
-        state.nntp.can_post_to_group(&path.group).await
-    } else {
-        false
-    };
+    let can_post = can_post_to_group(&current_user, &state, &path.group).await;
 
     let mut context = tera::Context::new();
     context.insert("config", &state.config.ui);
@@ -133,15 +126,7 @@ pub async fn view(
     context.insert("pagination", &pagination);
     context.insert("can_post", &can_post);
 
-    // Auth context for header
-    context.insert("oidc_enabled", &state.oidc.is_some());
-    if let Some(user) = current_user.0.as_ref() {
-        context.insert("user", &serde_json::json!({
-            "display_name": user.display_name(),
-        }));
-        // Include CSRF token for reply forms
-        context.insert("csrf_token", &user.csrf_token);
-    }
+    insert_auth_context(&mut context, &state, &current_user, true);
 
     let html = state
         .tera

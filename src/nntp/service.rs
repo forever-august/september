@@ -17,13 +17,12 @@ use tracing::instrument;
 use nntp_rs::OverviewEntry;
 
 use crate::config::{
-    NntpServerConfig, NntpSettings, BROADCAST_CHANNEL_CAPACITY,
-    NNTP_HIGH_PRIORITY_QUEUE_CAPACITY, NNTP_LOW_PRIORITY_QUEUE_CAPACITY,
-    NNTP_NORMAL_PRIORITY_QUEUE_CAPACITY,
+    NntpServerConfig, NntpSettings, BROADCAST_CHANNEL_CAPACITY, NNTP_HIGH_PRIORITY_QUEUE_CAPACITY,
+    NNTP_LOW_PRIORITY_QUEUE_CAPACITY, NNTP_NORMAL_PRIORITY_QUEUE_CAPACITY,
 };
 
 use super::messages::{GroupStatsView, NntpError, NntpRequest, Priority};
-use super::worker::NntpWorker;
+use super::worker::{NntpWorker, WorkerCounters, WorkerQueues};
 use super::{ArticleView, GroupView, ThreadView};
 
 /// Pending request with timestamp for timeout checking
@@ -137,11 +136,15 @@ impl NntpService {
                 id,
                 (*self.server_config).clone(),
                 (*self.global_settings).clone(),
-                self.high_rx.clone(),
-                self.normal_rx.clone(),
-                self.low_rx.clone(),
-                self.connected_workers.clone(),
-                self.posting_workers.clone(),
+                WorkerQueues {
+                    high: self.high_rx.clone(),
+                    normal: self.normal_rx.clone(),
+                    low: self.low_rx.clone(),
+                },
+                WorkerCounters {
+                    connected: self.connected_workers.clone(),
+                    posting: self.posting_workers.clone(),
+                },
             );
             tokio::spawn(worker.run());
         }
@@ -255,7 +258,12 @@ impl NntpService {
 
         // Broadcast Arc-wrapped result to waiters, then cleanup pending
         self.pending.threads.lock().await.remove(&cache_key);
-        let _ = tx.send(result.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.clone()));
+        let _ = tx.send(
+            result
+                .as_ref()
+                .map(|v| Arc::new(v.clone()))
+                .map_err(|e| e.clone()),
+        );
 
         tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         result
@@ -306,7 +314,12 @@ impl NntpService {
 
         // Broadcast Arc-wrapped result to waiters, then cleanup pending
         *self.pending.groups.lock().await = None;
-        let _ = tx.send(result.as_ref().map(|v| Arc::new(v.clone())).map_err(|e| e.clone()));
+        let _ = tx.send(
+            result
+                .as_ref()
+                .map(|v| Arc::new(v.clone()))
+                .map_err(|e| e.clone()),
+        );
 
         tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         result
@@ -411,11 +424,42 @@ impl NntpService {
         body: String,
     ) -> Result<(), NntpError> {
         let start = Instant::now();
-        
+
         let (resp_tx, resp_rx) = oneshot::channel();
         self.send_request(NntpRequest::PostArticle {
             headers,
             body,
+            response: resp_tx,
+        })
+        .await?;
+
+        // Wait for result with timeout
+        let result = match tokio::time::timeout(self.request_timeout, resp_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(NntpError("Worker dropped request".into())),
+            Err(_) => Err(NntpError("Request timeout".into())),
+        };
+
+        tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+        result
+    }
+
+    /// Check if an article exists on this server using the STAT command.
+    ///
+    /// Returns Ok(true) if the article exists, Ok(false) if not found,
+    /// or Err for connection/other errors. This is faster than get_article
+    /// as it doesn't transfer the article content.
+    #[instrument(
+        name = "nntp.service.check_article_exists",
+        skip(self),
+        fields(server = %self.name, message_id = %message_id, duration_ms)
+    )]
+    pub async fn check_article_exists(&self, message_id: &str) -> Result<bool, NntpError> {
+        let start = Instant::now();
+
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.send_request(NntpRequest::CheckArticleExists {
+            message_id: message_id.to_string(),
             response: resp_tx,
         })
         .await?;

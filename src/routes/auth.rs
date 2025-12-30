@@ -15,7 +15,7 @@ use axum_extra::extract::{
     cookie::{Cookie, PrivateCookieJar, SameSite},
     Host,
 };
-use http::{StatusCode, HeaderMap};
+use http::{HeaderMap, StatusCode};
 use openidconnect::{CsrfToken, PkceCodeChallenge};
 use serde::Deserialize;
 use time::Duration as TimeDuration;
@@ -52,22 +52,22 @@ pub struct LogoutForm {
 fn validate_return_to(return_to: Option<&str>) -> Option<String> {
     let url = return_to?;
     let trimmed = url.trim();
-    
+
     // Must start with "/" (relative path)
     if !trimmed.starts_with('/') {
         return None;
     }
-    
+
     // Must not contain "//" which could be a protocol-relative URL
     if trimmed.contains("//") {
         return None;
     }
-    
+
     // Must not contain control characters or start with "/\"
     if trimmed.starts_with("/\\") || trimmed.chars().any(|c| c.is_control()) {
         return None;
     }
-    
+
     Some(trimmed.to_string())
 }
 
@@ -80,14 +80,14 @@ fn detect_https(headers: &HeaderMap) -> bool {
             return proto_str.eq_ignore_ascii_case("https");
         }
     }
-    
+
     // Check X-Forwarded-Ssl header
     if let Some(ssl) = headers.get("x-forwarded-ssl") {
         if let Ok(ssl_str) = ssl.to_str() {
             return ssl_str.eq_ignore_ascii_case("on");
         }
     }
-    
+
     false
 }
 
@@ -99,43 +99,49 @@ pub async fn login(
     Query(query): Query<LoginQuery>,
 ) -> Result<Response, AuthError> {
     let oidc = state.oidc.as_ref().ok_or(AuthError::NotConfigured)?;
-    
+
     let providers: Vec<_> = oidc.providers().collect();
-    
+
     if providers.is_empty() {
         return Err(AuthError::NotConfigured);
     }
-    
+
     // If only one provider, redirect directly to it
     if providers.len() == 1 {
         let provider = &providers[0];
         let redirect_url = if let Some(return_to) = &query.return_to {
-            format!("/auth/login/{}?return_to={}", provider.name, urlencoding::encode(return_to))
+            format!(
+                "/auth/login/{}?return_to={}",
+                provider.name,
+                urlencoding::encode(return_to)
+            )
         } else {
             format!("/auth/login/{}", provider.name)
         };
         return Ok(Redirect::to(&redirect_url).into_response());
     }
-    
+
     // Multiple providers - show selection page
     let provider_list: Vec<_> = providers
         .iter()
-        .map(|p| serde_json::json!({
-            "name": p.name,
-            "display_name": p.display_name,
-        }))
+        .map(|p| {
+            serde_json::json!({
+                "name": p.name,
+                "display_name": p.display_name,
+            })
+        })
         .collect();
-    
+
     let mut context = tera::Context::new();
     context.insert("config", &state.config.ui);
     context.insert("providers", &provider_list);
     context.insert("return_to", &query.return_to);
-    
+
     let html = state
         .tera
         .render("auth/login.html", &context)
         .map_err(|e| AuthError::Internal(format!("Template error: {}", e)))?;
-    
+
     Ok(Html(html).into_response())
 }
 
@@ -150,25 +156,25 @@ pub async fn login_provider(
     Query(query): Query<LoginQuery>,
 ) -> Result<(PrivateCookieJar, Redirect), AuthError> {
     let oidc = state.oidc.as_ref().ok_or(AuthError::NotConfigured)?;
-    
+
     let provider_config = oidc
         .get_provider(&provider)
         .ok_or_else(|| AuthError::ProviderNotFound(provider.clone()))?;
-    
+
     // Generate PKCE challenge
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
-    
+
     // Generate CSRF token
     let csrf_token = CsrfToken::new_random();
-    
+
     // Detect HTTPS from headers
     let use_https = detect_https(&headers);
-    
+
     // Build redirect URI from Host header
     let redirect_uri = oidc
         .build_redirect_uri(&host, &provider, use_https)
         .map_err(|e| AuthError::Internal(e.to_string()))?;
-    
+
     // Build authorization URL
     let auth_url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
@@ -179,29 +185,29 @@ pub async fn login_provider(
         urlencoding::encode(csrf_token.secret()),
         urlencoding::encode(pkce_challenge.as_str()),
     );
-    
+
     // Validate return_to to prevent open redirects
     let safe_return_to = validate_return_to(query.return_to.as_deref());
-    
+
     // Store flow state in cookie
     let flow_state = AuthFlowState::new(
         csrf_token.secret().to_string(),
         pkce_verifier.secret().to_string(),
         safe_return_to,
     );
-    
+
     let flow_state_json = serde_json::to_string(&flow_state)
         .map_err(|e| AuthError::Internal(format!("Failed to serialize flow state: {}", e)))?;
-    
+
     let cookie = Cookie::build((cookie_names::AUTH_FLOW, flow_state_json))
         .path("/")
         .http_only(true)
         .same_site(SameSite::Lax)
         .max_age(TimeDuration::minutes(10))
         .build();
-    
+
     let jar = jar.add(cookie);
-    
+
     Ok((jar, Redirect::to(&auth_url)))
 }
 
@@ -216,54 +222,57 @@ pub async fn callback(
     Query(query): Query<CallbackQuery>,
 ) -> Result<(PrivateCookieJar, Response), AuthError> {
     let oidc = state.oidc.as_ref().ok_or(AuthError::NotConfigured)?;
-    
+
     // Check for error from IdP
     if let Some(error) = &query.error {
-        let description = query.error_description.as_deref().unwrap_or("Unknown error");
+        let description = query
+            .error_description
+            .as_deref()
+            .unwrap_or("Unknown error");
         tracing::warn!(error = %error, description = %description, "IdP returned error");
         return Err(AuthError::IdpError {
             error: error.clone(),
             description: description.to_string(),
         });
     }
-    
+
     // Get authorization code
     let code = query.code.as_ref().ok_or(AuthError::MissingCode)?;
-    
+
     // Get and validate state
     let state_param = query.state.as_ref().ok_or(AuthError::InvalidState)?;
-    
+
     // Get flow state from cookie
     let flow_state_cookie = jar
         .get(cookie_names::AUTH_FLOW)
         .ok_or(AuthError::InvalidState)?;
-    
-    let flow_state: AuthFlowState = serde_json::from_str(flow_state_cookie.value())
-        .map_err(|_| AuthError::InvalidState)?;
-    
+
+    let flow_state: AuthFlowState =
+        serde_json::from_str(flow_state_cookie.value()).map_err(|_| AuthError::InvalidState)?;
+
     // Validate CSRF token
     if !flow_state.validate_state(state_param) {
         return Err(AuthError::InvalidState);
     }
-    
+
     // Check expiry
     if flow_state.is_expired() {
         return Err(AuthError::FlowExpired);
     }
-    
+
     // Get provider config
     let provider_config = oidc
         .get_provider(&provider)
         .ok_or_else(|| AuthError::ProviderNotFound(provider.clone()))?;
-    
+
     // Detect HTTPS from headers
     let use_https = detect_https(&headers);
-    
+
     // Exchange code for tokens - use the same redirect URI as in login
     let redirect_uri = oidc
         .build_redirect_uri(&host, &provider, use_https)
         .map_err(|e| AuthError::Internal(e.to_string()))?;
-    
+
     let token_response = exchange_code_for_tokens(
         oidc.http_client(),
         &provider_config,
@@ -272,7 +281,7 @@ pub async fn callback(
         &flow_state.pkce_verifier,
     )
     .await?;
-    
+
     // Fetch user info
     let user_info = fetch_user_info(
         oidc.http_client(),
@@ -280,51 +289,62 @@ pub async fn callback(
         &token_response.access_token,
     )
     .await?;
-    
+
     // Extract user fields
     let sub = user_info
         .get(&provider_config.userinfo_sub_field)
         .and_then(|v| v.as_str())
-        .or_else(|| user_info.get(&provider_config.userinfo_sub_field).and_then(|v| v.as_i64().map(|_| "")))
+        .or_else(|| {
+            user_info
+                .get(&provider_config.userinfo_sub_field)
+                .and_then(|v| v.as_i64().map(|_| ""))
+        })
         .map(|s| s.to_string())
-        .or_else(|| user_info.get(&provider_config.userinfo_sub_field).and_then(|v| v.as_i64()).map(|n| n.to_string()))
+        .or_else(|| {
+            user_info
+                .get(&provider_config.userinfo_sub_field)
+                .and_then(|v| v.as_i64())
+                .map(|n| n.to_string())
+        })
         .ok_or_else(|| AuthError::MissingClaim(provider_config.userinfo_sub_field.clone()))?;
-    
+
     let name = user_info
         .get("name")
         .and_then(|v| v.as_str())
         .map(String::from);
-    
+
     let email = user_info
         .get("email")
         .and_then(|v| v.as_str())
         .map(String::from);
-    
+
     // Create user session
     let user = User::new(sub, name, email, provider.clone(), oidc.session_lifetime());
-    
+
     let user_json = serde_json::to_string(&user)
         .map_err(|e| AuthError::Internal(format!("Failed to serialize user: {}", e)))?;
-    
+
     // Set session cookie
     let session_cookie = Cookie::build((cookie_names::SESSION, user_json))
         .path("/")
         .http_only(true)
         .same_site(SameSite::Lax)
-        .max_age(TimeDuration::days(oidc.session_lifetime().as_secs() as i64 / 86400))
+        .max_age(TimeDuration::days(
+            oidc.session_lifetime().as_secs() as i64 / 86400,
+        ))
         .build();
-    
+
     // Remove auth flow cookie
     let remove_flow_cookie = Cookie::build((cookie_names::AUTH_FLOW, ""))
         .path("/")
         .max_age(TimeDuration::ZERO)
         .build();
-    
+
     let jar = jar.add(session_cookie).remove(remove_flow_cookie);
-    
+
     // Redirect to return_to (already validated during login) or home
     let redirect_url = flow_state.return_to.as_deref().unwrap_or("/");
-    
+
     Ok((jar, Redirect::to(redirect_url).into_response()))
 }
 
@@ -340,12 +360,12 @@ pub async fn logout(
         .path("/")
         .max_age(TimeDuration::ZERO)
         .build();
-    
+
     let jar = jar.remove(remove_cookie);
-    
+
     // Validate return_to to prevent open redirects
-    let redirect_url = validate_return_to(form.return_to.as_deref())
-        .unwrap_or_else(|| "/".to_string());
+    let redirect_url =
+        validate_return_to(form.return_to.as_deref()).unwrap_or_else(|| "/".to_string());
     (jar, Redirect::to(&redirect_url))
 }
 
@@ -379,14 +399,14 @@ async fn exchange_code_for_tokens(
         ("client_secret", provider.client_secret.secret()),
         ("code_verifier", pkce_verifier),
     ];
-    
+
     let response = http_client
         .post(provider.endpoints.token_url.as_str())
         .form(&params)
         .send()
         .await
         .map_err(|e| AuthError::TokenExchange(format!("Request failed: {}", e)))?;
-    
+
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
@@ -396,12 +416,12 @@ async fn exchange_code_for_tokens(
             status, body
         )));
     }
-    
+
     let token_response: TokenResponseData = response
         .json()
         .await
         .map_err(|e| AuthError::TokenExchange(format!("Failed to parse response: {}", e)))?;
-    
+
     Ok(token_response)
 }
 
@@ -416,14 +436,14 @@ async fn fetch_user_info(
         .userinfo_url
         .as_ref()
         .ok_or_else(|| AuthError::Internal("No userinfo endpoint configured".to_string()))?;
-    
+
     let response = http_client
         .get(userinfo_url.as_str())
         .bearer_auth(access_token)
         .send()
         .await
         .map_err(|e| AuthError::UserInfo(format!("Request failed: {}", e)))?;
-    
+
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
@@ -432,12 +452,12 @@ async fn fetch_user_info(
             status, body
         )));
     }
-    
+
     let user_info: serde_json::Value = response
         .json()
         .await
         .map_err(|e| AuthError::UserInfo(format!("Failed to parse response: {}", e)))?;
-    
+
     Ok(user_info)
 }
 
@@ -446,31 +466,31 @@ async fn fetch_user_info(
 pub enum AuthError {
     #[error("OIDC authentication is not configured")]
     NotConfigured,
-    
+
     #[error("Provider '{0}' not found")]
     ProviderNotFound(String),
-    
+
     #[error("Identity provider returned error: {error} - {description}")]
     IdpError { error: String, description: String },
-    
+
     #[error("Missing authorization code")]
     MissingCode,
-    
+
     #[error("Invalid or missing state parameter")]
     InvalidState,
-    
+
     #[error("Authentication flow expired")]
     FlowExpired,
-    
+
     #[error("Token exchange failed: {0}")]
     TokenExchange(String),
-    
+
     #[error("Failed to fetch user info: {0}")]
     UserInfo(String),
-    
+
     #[error("Missing required claim: {0}")]
     MissingClaim(String),
-    
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -486,7 +506,10 @@ impl IntoResponse for AuthError {
                 StatusCode::NOT_FOUND,
                 format!("Authentication provider '{}' not found", name),
             ),
-            AuthError::IdpError { error: _, description } => (
+            AuthError::IdpError {
+                error: _,
+                description,
+            } => (
                 StatusCode::BAD_REQUEST,
                 format!("Authentication failed: {}", description),
             ),
@@ -516,7 +539,7 @@ impl IntoResponse for AuthError {
                 )
             }
         };
-        
+
         // Return error page using template structure
         // Note: We use inline HTML here since we don't have access to Tera in the error handler.
         // This matches the structure of templates/auth/error.html
@@ -544,7 +567,7 @@ impl IntoResponse for AuthError {
 </html>"#,
             message
         );
-        
+
         (status, Html(body)).into_response()
     }
 }

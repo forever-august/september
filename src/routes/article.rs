@@ -10,6 +10,7 @@ use axum::{
 use serde::Deserialize;
 use tracing::instrument;
 
+use super::{can_post_to_group, insert_auth_context};
 use crate::error::{AppError, AppErrorResponse, ResultExt};
 use crate::middleware::{CurrentUser, RequestId};
 use crate::state::AppState;
@@ -56,11 +57,7 @@ pub async fn view(
 
     // Check if user can post (needs group and email)
     let can_post = if let Some(ref g) = group {
-        if current_user.0.as_ref().map(|u| u.email.is_some()).unwrap_or(false) {
-            state.nntp.can_post_to_group(g).await
-        } else {
-            false
-        }
+        can_post_to_group(&current_user, &state, g).await
     } else {
         false
     };
@@ -75,13 +72,7 @@ pub async fn view(
         context.insert("group", g);
     }
 
-    // Auth context for header
-    context.insert("oidc_enabled", &state.oidc.is_some());
-    if let Some(user) = current_user.0.as_ref() {
-        context.insert("user", &serde_json::json!({
-            "display_name": user.display_name(),
-        }));
-    }
+    insert_auth_context(&mut context, &state, &current_user, true);
 
     let html = state
         .tera

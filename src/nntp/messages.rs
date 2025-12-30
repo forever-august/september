@@ -95,6 +95,11 @@ pub enum NntpRequest {
         body: String,
         response: oneshot::Sender<Result<(), NntpError>>,
     },
+    /// Check if an article exists using STAT command (fast existence check)
+    CheckArticleExists {
+        message_id: String,
+        response: oneshot::Sender<Result<bool, NntpError>>,
+    },
 }
 
 impl NntpRequest {
@@ -106,7 +111,9 @@ impl NntpRequest {
     /// - Low: Background refresh operations (GetGroupStats, GetNewArticles)
     pub fn priority(&self) -> Priority {
         match self {
-            NntpRequest::GetArticle { .. } | NntpRequest::PostArticle { .. } => Priority::High,
+            NntpRequest::GetArticle { .. }
+            | NntpRequest::PostArticle { .. }
+            | NntpRequest::CheckArticleExists { .. } => Priority::High,
             NntpRequest::GetThreads { .. } | NntpRequest::GetGroups { .. } => Priority::Normal,
             NntpRequest::GetGroupStats { .. } | NntpRequest::GetNewArticles { .. } => Priority::Low,
         }
@@ -157,6 +164,13 @@ impl NntpRequest {
                     let _ = response.send(Err(e));
                 }
             }
+            NntpRequest::CheckArticleExists { response, .. } => {
+                if let Ok(NntpResponse::ArticleExists(exists)) = result {
+                    let _ = response.send(Ok(exists));
+                } else if let Err(e) = result {
+                    let _ = response.send(Err(e));
+                }
+            }
         }
     }
 }
@@ -169,4 +183,5 @@ pub enum NntpResponse {
     GroupStats(GroupStatsView),
     NewArticles(Vec<OverviewEntry>),
     PostResult,
+    ArticleExists(bool),
 }

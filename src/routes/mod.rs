@@ -14,7 +14,11 @@ pub mod post;
 pub mod privacy;
 pub mod threads;
 
-use axum::{middleware, routing::{get, post}, Router};
+use axum::{
+    middleware,
+    routing::{get, post},
+    Router,
+};
 use http::header::{HeaderValue, CACHE_CONTROL};
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 
@@ -22,8 +26,66 @@ use crate::config::{
     CACHE_CONTROL_ARTICLE, CACHE_CONTROL_HOME, CACHE_CONTROL_STATIC, CACHE_CONTROL_THREAD_LIST,
     CACHE_CONTROL_THREAD_VIEW, STATIC_DIR,
 };
-use crate::middleware::{auth_layer, request_id_layer};
+use crate::middleware::{auth_layer, request_id_layer, CurrentUser};
 use crate::state::AppState;
+
+/// Insert authentication-related context for template rendering.
+///
+/// This helper consolidates the common pattern of adding auth context to templates:
+/// - `oidc_enabled`: Whether OIDC authentication is configured
+/// - `user.display_name`: The authenticated user's display name (if logged in)
+/// - `csrf_token`: CSRF token for form submissions (if `include_csrf` is true)
+///
+/// # Arguments
+/// * `context` - The Tera template context to modify
+/// * `state` - Application state containing OIDC configuration
+/// * `current_user` - The current user extracted from session
+/// * `include_csrf` - Whether to include CSRF token (needed for forms)
+pub fn insert_auth_context(
+    context: &mut tera::Context,
+    state: &AppState,
+    current_user: &CurrentUser,
+    include_csrf: bool,
+) {
+    context.insert("oidc_enabled", &state.oidc.is_some());
+    if let Some(user) = current_user.0.as_ref() {
+        context.insert(
+            "user",
+            &serde_json::json!({
+                "display_name": user.display_name(),
+            }),
+        );
+        if include_csrf {
+            context.insert("csrf_token", &user.csrf_token);
+        }
+    }
+}
+
+/// Check if the current user can post to a group.
+///
+/// This combines two checks:
+/// 1. The user must be authenticated with a valid email address
+/// 2. The group must allow posting (checked via NNTP server capabilities)
+///
+/// # Arguments
+/// * `current_user` - The current user extracted from session
+/// * `state` - Application state for NNTP service access
+/// * `group` - The newsgroup name to check
+///
+/// # Returns
+/// `true` if the user can post to the group, `false` otherwise.
+pub async fn can_post_to_group(current_user: &CurrentUser, state: &AppState, group: &str) -> bool {
+    if current_user
+        .0
+        .as_ref()
+        .map(|u| u.email.is_some())
+        .unwrap_or(false)
+    {
+        state.nntp.can_post_to_group(group).await
+    } else {
+        false
+    }
+}
 
 /// Creates the Axum router with all routes and cache headers.
 pub fn create_router(state: AppState) -> Router {
@@ -44,12 +106,12 @@ pub fn create_router(state: AppState) -> Router {
         ));
 
     // Thread list - shorter cache, new threads appear regularly
-    let thread_list_routes = Router::new()
-        .route("/g/{group}", get(threads::list))
-        .layer(SetResponseHeaderLayer::if_not_present(
+    let thread_list_routes = Router::new().route("/g/{group}", get(threads::list)).layer(
+        SetResponseHeaderLayer::if_not_present(
             CACHE_CONTROL,
             HeaderValue::from_static(CACHE_CONTROL_THREAD_LIST),
-        ));
+        ),
+    );
 
     // Home/browse - moderate cache
     let home_routes = Router::new()

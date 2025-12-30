@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Authenticated user information.
-/// 
+///
 /// This is stored in a signed cookie and represents the current session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
@@ -32,7 +32,7 @@ pub struct User {
 fn generate_csrf_token() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
-    
+
     // Use RandomState to generate a unique token
     let state = RandomState::new();
     let mut hasher = state.build_hasher();
@@ -59,7 +59,7 @@ impl User {
             .unwrap()
             .as_secs()
             + lifetime.as_secs();
-        
+
         Self {
             sub,
             name,
@@ -69,7 +69,7 @@ impl User {
             csrf_token: generate_csrf_token(),
         }
     }
-    
+
     /// Check if this session has expired
     pub fn is_expired(&self) -> bool {
         let now = SystemTime::now()
@@ -78,21 +78,21 @@ impl User {
             .as_secs();
         now >= self.expires_at
     }
-    
+
     /// Check if this session should be refreshed (within last 20% of lifetime)
     pub fn should_refresh(&self, lifetime: Duration) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         // Refresh when less than 20% of lifetime remains
         let refresh_threshold = lifetime.as_secs() / 5;
         let remaining = self.expires_at.saturating_sub(now);
-        
+
         remaining < refresh_threshold
     }
-    
+
     /// Extend the session expiry (for sliding window)
     pub fn refresh(&mut self, lifetime: Duration) {
         self.expires_at = SystemTime::now()
@@ -101,7 +101,7 @@ impl User {
             .as_secs()
             + lifetime.as_secs();
     }
-    
+
     /// Get the display name, falling back to email or subject ID
     pub fn display_name(&self) -> &str {
         self.name
@@ -109,7 +109,7 @@ impl User {
             .or(self.email.as_deref())
             .unwrap_or(&self.sub)
     }
-    
+
     /// Validate a CSRF token against the session's token
     pub fn validate_csrf(&self, token: &str) -> bool {
         // Use constant-time comparison to prevent timing attacks
@@ -125,7 +125,7 @@ impl User {
 }
 
 /// Temporary state stored during OAuth2 authorization flow.
-/// 
+///
 /// This is stored in a short-lived cookie and contains:
 /// - CSRF token (state parameter)
 /// - PKCE code verifier
@@ -144,17 +144,13 @@ pub struct AuthFlowState {
 
 impl AuthFlowState {
     /// Create new auth flow state with 10-minute expiry
-    pub fn new(
-        csrf_token: String,
-        pkce_verifier: String,
-        return_to: Option<String>,
-    ) -> Self {
+    pub fn new(csrf_token: String, pkce_verifier: String, return_to: Option<String>) -> Self {
         let expires_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
             + 600; // 10 minutes
-        
+
         Self {
             csrf_token,
             pkce_verifier,
@@ -162,7 +158,7 @@ impl AuthFlowState {
             expires_at,
         }
     }
-    
+
     /// Check if this flow state has expired
     pub fn is_expired(&self) -> bool {
         let now = SystemTime::now()
@@ -171,7 +167,7 @@ impl AuthFlowState {
             .as_secs();
         now >= self.expires_at
     }
-    
+
     /// Validate that the returned state matches our CSRF token
     pub fn validate_state(&self, state: &str) -> bool {
         self.csrf_token == state

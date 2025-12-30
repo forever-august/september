@@ -69,10 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
 
     // Determine log format: CLI > config file > default ("text")
-    let log_format = args
-        .log_format
-        .as_deref()
-        .unwrap_or(&config.logging.format);
+    let log_format = args.log_format.as_deref().unwrap_or(&config.logging.format);
 
     // Build the subscriber with appropriate format layer
     let env_filter = tracing_subscriber::EnvFilter::new(&log_filter);

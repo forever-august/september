@@ -48,10 +48,9 @@ impl AsyncStream for NntpStream {
         let tls_required = TLS_REQUIRED.get();
 
         // Parse host from addr for TLS server name
-        let host = addr
-            .split(':')
-            .next()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid address"))?;
+        let host = addr.split(':').next().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid address")
+        })?;
 
         // Try TLS first
         match Self::connect_tls(addr, host).await {

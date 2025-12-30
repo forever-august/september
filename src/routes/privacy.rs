@@ -3,6 +3,7 @@
 use axum::{extract::State, response::Html, Extension};
 use tracing::instrument;
 
+use super::insert_auth_context;
 use crate::error::{AppError, AppErrorResponse, ResultExt};
 use crate::middleware::{CurrentUser, RequestId};
 use crate::state::AppState;
@@ -17,16 +18,7 @@ pub async fn privacy(
     let mut context = tera::Context::new();
     context.insert("config", &state.config.ui);
 
-    // Auth context for header
-    context.insert("oidc_enabled", &state.oidc.is_some());
-    if let Some(user) = current_user.0.as_ref() {
-        context.insert(
-            "user",
-            &serde_json::json!({
-                "display_name": user.display_name(),
-            }),
-        );
-    }
+    insert_auth_context(&mut context, &state, &current_user, false);
 
     let html = state
         .tera

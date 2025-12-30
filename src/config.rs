@@ -188,6 +188,14 @@ pub const ACTIVITY_HIGH_RPS: f64 = 10000.0;
 /// Interval between group stats background refreshes (1 hour)
 pub const GROUP_STATS_REFRESH_INTERVAL_SECS: u64 = 3600;
 
+/// Maximum polling attempts when waiting for a posted article to appear.
+/// After posting, we poll the NNTP server until the article is found.
+pub const POST_POLL_MAX_ATTEMPTS: u32 = 15;
+
+/// Interval between polling attempts (milliseconds).
+/// Total max wait time = POST_POLL_MAX_ATTEMPTS * POST_POLL_INTERVAL_MS
+pub const POST_POLL_INTERVAL_MS: u64 = 10;
+
 // =============================================================================
 // Default Paths and Strings
 // =============================================================================
@@ -306,7 +314,8 @@ impl NntpServerConfig {
 
     /// Get effective request timeout (server-specific or global default)
     pub fn request_timeout_seconds(&self, global: &NntpSettings) -> u64 {
-        self.request_timeout_seconds.unwrap_or(global.request_timeout_seconds)
+        self.request_timeout_seconds
+            .unwrap_or(global.request_timeout_seconds)
     }
 
     /// Get worker count (default: 4)
@@ -473,7 +482,8 @@ impl AppConfig {
         // Validate: at least one server must be configured
         if config.server.is_empty() {
             return Err(ConfigError::Validation(
-                "No NNTP servers configured. Add [[server]] sections or legacy [nntp] server/port".to_string()
+                "No NNTP servers configured. Add [[server]] sections or legacy [nntp] server/port"
+                    .to_string(),
             ));
         }
 
@@ -481,7 +491,8 @@ impl AppConfig {
         if let Some(ref oidc) = config.oidc {
             if oidc.providers.is_empty() {
                 return Err(ConfigError::Validation(
-                    "OIDC configured but no providers defined. Add [[oidc.provider]] sections.".to_string()
+                    "OIDC configured but no providers defined. Add [[oidc.provider]] sections."
+                        .to_string(),
                 ));
             }
             for provider in &oidc.providers {
@@ -538,15 +549,15 @@ pub struct OidcConfig {
     /// Secret for signing session cookies.
     /// Supports: env:VAR_NAME, file:/path, or literal value (64+ chars recommended)
     pub cookie_secret: String,
-    
+
     /// Session lifetime in days (default: 30)
     #[serde(default = "OidcConfig::default_session_lifetime")]
     pub session_lifetime_days: u64,
-    
+
     /// Optional override for redirect URI base URL.
     /// If not set, auto-detected from request Host header.
     pub redirect_uri_base: Option<String>,
-    
+
     /// OIDC/OAuth2 providers
     #[serde(default, rename = "provider")]
     pub providers: Vec<OidcProviderConfig>,
@@ -556,7 +567,7 @@ impl OidcConfig {
     fn default_session_lifetime() -> u64 {
         30
     }
-    
+
     /// Resolve the cookie secret from env/file/literal
     pub fn resolve_cookie_secret(&self) -> Result<String, ConfigError> {
         resolve_secret(&self.cookie_secret)
@@ -568,14 +579,14 @@ impl OidcConfig {
 pub struct OidcProviderConfig {
     /// URL-safe identifier (used in routes like /auth/login/google)
     pub name: String,
-    
+
     /// Human-readable name shown on login page
     pub display_name: String,
-    
+
     // === Discovery mode (preferred for OIDC providers) ===
     /// OIDC issuer URL - endpoints discovered automatically via .well-known/openid-configuration
     pub issuer_url: Option<String>,
-    
+
     // === Manual mode (fallback for OAuth2-only providers like GitHub) ===
     /// Authorization endpoint URL
     pub auth_url: Option<String>,
@@ -583,14 +594,14 @@ pub struct OidcProviderConfig {
     pub token_url: Option<String>,
     /// UserInfo endpoint URL
     pub userinfo_url: Option<String>,
-    
+
     /// OAuth2 client ID
     pub client_id: String,
-    
+
     /// OAuth2 client secret.
     /// Supports: env:VAR_NAME, file:/path, or literal value
     pub client_secret: String,
-    
+
     /// Field name for subject ID in userinfo response (default: "sub")
     /// GitHub uses "id" instead of "sub"
     #[serde(default = "OidcProviderConfig::default_sub_field")]
@@ -601,36 +612,37 @@ impl OidcProviderConfig {
     fn default_sub_field() -> String {
         "sub".to_string()
     }
-    
+
     /// Check if this provider uses OIDC discovery mode
     pub fn uses_discovery(&self) -> bool {
         self.issuer_url.is_some()
     }
-    
+
     /// Check if this provider uses manual endpoint configuration
     pub fn uses_manual_endpoints(&self) -> bool {
         self.auth_url.is_some() || self.token_url.is_some() || self.userinfo_url.is_some()
     }
-    
+
     /// Validate the provider configuration
     pub fn validate(&self) -> Result<(), ConfigError> {
         let has_discovery = self.issuer_url.is_some();
-        let has_manual = self.auth_url.is_some() || self.token_url.is_some() || self.userinfo_url.is_some();
-        
+        let has_manual =
+            self.auth_url.is_some() || self.token_url.is_some() || self.userinfo_url.is_some();
+
         if has_discovery && has_manual {
             return Err(ConfigError::Validation(format!(
                 "Provider '{}': cannot specify both issuer_url and manual endpoints (auth_url/token_url/userinfo_url)",
                 self.name
             )));
         }
-        
+
         if !has_discovery && !has_manual {
             return Err(ConfigError::Validation(format!(
                 "Provider '{}': must specify either issuer_url (for OIDC discovery) or all manual endpoints (auth_url, token_url, userinfo_url)",
                 self.name
             )));
         }
-        
+
         if has_manual {
             if self.auth_url.is_none() {
                 return Err(ConfigError::Validation(format!(
@@ -651,18 +663,22 @@ impl OidcProviderConfig {
                 )));
             }
         }
-        
+
         // Validate name is URL-safe (alphanumeric, dash, underscore only)
-        if !self.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if !self
+            .name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Err(ConfigError::Validation(format!(
                 "Provider '{}': name must contain only alphanumeric characters, dashes, and underscores",
                 self.name
             )));
         }
-        
+
         Ok(())
     }
-    
+
     /// Resolve the client secret from env/file/literal
     pub fn resolve_client_secret(&self) -> Result<String, ConfigError> {
         resolve_secret(&self.client_secret)

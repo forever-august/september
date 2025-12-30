@@ -22,8 +22,8 @@ use nntp_rs::OverviewEntry;
 use serde::Serialize;
 
 use crate::config::{
-    DEFAULT_PREVIEW_LINES, DEFAULT_SUBJECT, PAGINATION_WINDOW, PREVIEW_HARD_LIMIT,
-    SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, SECONDS_PER_MONTH, SECONDS_PER_YEAR,
+    DEFAULT_PREVIEW_LINES, DEFAULT_SUBJECT, PAGINATION_WINDOW, PREVIEW_HARD_LIMIT, SECONDS_PER_DAY,
+    SECONDS_PER_HOUR, SECONDS_PER_MINUTE, SECONDS_PER_MONTH, SECONDS_PER_YEAR,
 };
 
 /// Pagination state for paginated list views.
@@ -225,7 +225,8 @@ impl GroupTreeNode {
     /// Build a tree from a list of groups
     pub fn build_tree(groups: &[GroupView]) -> Vec<GroupTreeNode> {
         let mut root_children: Vec<GroupTreeNode> = Vec::new();
-        let mut root_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut root_map: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
         // Sort groups alphabetically
         let mut sorted_groups: Vec<&GroupView> = groups.iter().collect();
@@ -233,7 +234,15 @@ impl GroupTreeNode {
 
         for group in sorted_groups {
             let parts: Vec<&str> = group.name.split('.').collect();
-            Self::insert_path(&mut root_children, &mut root_map, &parts, &group.name, &group.description, None, None);
+            Self::insert_path(
+                &mut root_children,
+                &mut root_map,
+                &parts,
+                &group.name,
+                &group.description,
+                None,
+                None,
+            );
         }
 
         root_children
@@ -248,7 +257,8 @@ impl GroupTreeNode {
         group_stats: &std::collections::HashMap<String, Option<String>>,
     ) -> Vec<GroupTreeNode> {
         let mut root_children: Vec<GroupTreeNode> = Vec::new();
-        let mut root_map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut root_map: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
 
         // Sort groups alphabetically
         let mut sorted_groups: Vec<&GroupView> = groups.iter().collect();
@@ -258,7 +268,15 @@ impl GroupTreeNode {
             let parts: Vec<&str> = group.name.split('.').collect();
             let thread_count = thread_counts.get(&group.name).copied();
             let last_post_date = group_stats.get(&group.name).and_then(|d| d.clone());
-            Self::insert_path(&mut root_children, &mut root_map, &parts, &group.name, &group.description, thread_count, last_post_date);
+            Self::insert_path(
+                &mut root_children,
+                &mut root_map,
+                &parts,
+                &group.name,
+                &group.description,
+                thread_count,
+                last_post_date,
+            );
         }
 
         root_children
@@ -312,12 +330,23 @@ impl GroupTreeNode {
             for (i, child) in node.children.iter().enumerate() {
                 child_map.insert(child.segment.clone(), i);
             }
-            Self::insert_path(&mut node.children, &mut child_map, remaining, full_name, description, thread_count, last_post_date);
+            Self::insert_path(
+                &mut node.children,
+                &mut child_map,
+                remaining,
+                full_name,
+                description,
+                thread_count,
+                last_post_date,
+            );
         }
     }
 
     /// Find children at a given path (e.g., "comp.lang" returns children of comp.lang)
-    pub fn find_children_at_path(roots: &[GroupTreeNode], path: &str) -> Option<Vec<GroupTreeNode>> {
+    pub fn find_children_at_path(
+        roots: &[GroupTreeNode],
+        path: &str,
+    ) -> Option<Vec<GroupTreeNode>> {
         if path.is_empty() {
             return Some(roots.to_vec());
         }
@@ -436,7 +465,8 @@ pub fn build_threads_from_overview(entries: Vec<OverviewEntry>) -> Vec<ThreadVie
 
     for (root_id, thread_entries) in threads_map {
         // Find the actual root entry (might not be in our entries if it's older/expired)
-        let root_entry = thread_entries.iter()
+        let root_entry = thread_entries
+            .iter()
             .find(|e| e.message_id() == Some(&root_id));
 
         // Get subject from root entry if available, otherwise from first available entry
@@ -525,9 +555,7 @@ fn build_node_from_entry(
     }
 
     // Compute descendant count
-    let descendant_count: usize = replies.iter()
-        .map(|r| 1 + r.descendant_count)
-        .sum();
+    let descendant_count: usize = replies.iter().map(|r| 1 + r.descendant_count).sum();
 
     ThreadNodeView {
         message_id: msg_id.to_string(),
@@ -622,7 +650,10 @@ pub fn merge_articles_into_threads(
         } else {
             // Check if this is a known root
             if threads_by_root.contains_key(&msg_id) {
-                updates_by_thread.entry(msg_id.clone()).or_default().push(entry);
+                updates_by_thread
+                    .entry(msg_id.clone())
+                    .or_default()
+                    .push(entry);
             } else {
                 // New thread
                 new_roots.push(entry);
@@ -686,13 +717,14 @@ pub fn merge_articles_into_thread(
 
     // Build set of all message IDs in the existing thread for fast lookup
     let known_ids = collect_all_message_ids(&existing.root);
-    
+
     // Filter to only entries that reference a known message ID
     let relevant_entries: Vec<&OverviewEntry> = new_entries
         .iter()
         .filter(|entry| {
             if let Some(refs) = entry.references() {
-                refs.split_whitespace().any(|ref_id| known_ids.contains(ref_id))
+                refs.split_whitespace()
+                    .any(|ref_id| known_ids.contains(ref_id))
             } else {
                 false
             }
@@ -705,14 +737,14 @@ pub fn merge_articles_into_thread(
 
     // Clone the thread and add new entries
     let mut updated = existing.clone();
-    
+
     for entry in &relevant_entries {
         if let Some(msg_id) = entry.message_id() {
             // Skip if already in thread
             if known_ids.contains(msg_id) {
                 continue;
             }
-            
+
             let new_node = ThreadNodeView {
                 message_id: msg_id.to_string(),
                 article: Some(overview_entry_to_article_view(entry)),
@@ -754,19 +786,20 @@ fn collect_message_ids_to_root(
 fn collect_all_message_ids(node: &ThreadNodeView) -> std::collections::HashSet<String> {
     let mut ids = std::collections::HashSet::new();
     let mut stack = vec![node];
-    
+
     while let Some(n) = stack.pop() {
         ids.insert(n.message_id.clone());
         for reply in &n.replies {
             stack.push(reply);
         }
     }
-    
+
     ids
 }
 
-/// Add a reply node to the appropriate parent in the tree
-fn add_reply_to_node(
+/// Add a reply node to the appropriate parent in the tree.
+/// Returns true if the parent was found and the reply was added.
+pub fn add_reply_to_node(
     node: &mut ThreadNodeView,
     parent_id: &str,
     new_reply: ThreadNodeView,
@@ -842,9 +875,7 @@ pub fn build_threads_from_hdr(articles: Vec<HdrArticleData>) -> Vec<ThreadView> 
 
     for (root_id, thread_articles) in threads_map {
         // Find the actual root article (might not be in our articles if it's older/expired)
-        let root_article = thread_articles
-            .iter()
-            .find(|a| a.message_id == root_id);
+        let root_article = thread_articles.iter().find(|a| a.message_id == root_id);
 
         // Get subject from root article if available, otherwise from first available article
         let subject = root_article
@@ -1138,11 +1169,17 @@ pub fn compute_preview(body: &str) -> (String, bool) {
 
     if line_count <= max_lines {
         // Under line limit but over character limit
-        if let Some(pos) = stripped.get(PREVIEW_HARD_LIMIT..).and_then(|s| s.find('\n')) {
+        if let Some(pos) = stripped
+            .get(PREVIEW_HARD_LIMIT..)
+            .and_then(|s| s.find('\n'))
+        {
             return (stripped[..PREVIEW_HARD_LIMIT + pos].to_string(), has_more);
         }
         return (
-            stripped.get(..PREVIEW_HARD_LIMIT).unwrap_or(&stripped).to_string(),
+            stripped
+                .get(..PREVIEW_HARD_LIMIT)
+                .unwrap_or(&stripped)
+                .to_string(),
             has_more,
         );
     }

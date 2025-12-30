@@ -5,6 +5,7 @@
 //! Requests try servers in priority order with fallback on failure.
 //! Group lists are merged from all servers.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,11 +18,11 @@ use tokio::task::JoinHandle;
 use tracing::instrument;
 
 use crate::config::{
-    AppConfig, CacheConfig, BROADCAST_CHANNEL_CAPACITY, NEGATIVE_CACHE_SIZE_DIVISOR,
-    NNTP_NEGATIVE_CACHE_TTL_SECS, THREAD_CACHE_MULTIPLIER, INCREMENTAL_DEBOUNCE_MS,
-    BACKGROUND_REFRESH_MIN_PERIOD_SECS, BACKGROUND_REFRESH_MAX_PERIOD_SECS,
-    ACTIVITY_WINDOW_SECS, ACTIVITY_BUCKET_COUNT, ACTIVITY_HIGH_RPS,
-    GROUP_STATS_REFRESH_INTERVAL_SECS,
+    AppConfig, CacheConfig, ACTIVITY_BUCKET_COUNT, ACTIVITY_HIGH_RPS, ACTIVITY_WINDOW_SECS,
+    BACKGROUND_REFRESH_MAX_PERIOD_SECS, BACKGROUND_REFRESH_MIN_PERIOD_SECS,
+    BROADCAST_CHANNEL_CAPACITY, GROUP_STATS_REFRESH_INTERVAL_SECS, INCREMENTAL_DEBOUNCE_MS,
+    NEGATIVE_CACHE_SIZE_DIVISOR, NNTP_NEGATIVE_CACHE_TTL_SECS, POST_POLL_INTERVAL_MS,
+    POST_POLL_MAX_ATTEMPTS, THREAD_CACHE_MULTIPLIER,
 };
 use crate::error::AppError;
 
@@ -29,13 +30,17 @@ use nntp_rs::OverviewEntry;
 
 use super::messages::GroupStatsView;
 use super::service::NntpService;
-use super::{merge_articles_into_thread, merge_articles_into_threads, ArticleView, FlatComment, GroupView, PaginationInfo, ThreadView};
+use super::{
+    add_reply_to_node, compute_timeago, merge_articles_into_thread, merge_articles_into_threads,
+    ArticleView, FlatComment, GroupView, PaginationInfo, ThreadNodeView, ThreadView,
+};
 
 /// Type alias for pending group stats broadcast senders
 type PendingGroupStats = HashMap<String, broadcast::Sender<Result<GroupStatsView, String>>>;
 
 /// Type alias for pending incremental update broadcast senders
-type PendingIncremental = HashMap<String, broadcast::Sender<Result<Arc<Vec<OverviewEntry>>, String>>>;
+type PendingIncremental =
+    HashMap<String, broadcast::Sender<Result<Arc<Vec<OverviewEntry>>, String>>>;
 
 /// Type alias for pending groups list broadcast sender (single global request)
 type PendingGroups = Option<broadcast::Sender<Result<Vec<GroupView>, String>>>;
@@ -85,7 +90,7 @@ impl GroupActivity {
     /// Advance the bucket pointer to the given time, clearing old buckets.
     fn advance_to(&mut self, now_secs: u64) {
         let now_idx = Self::secs_to_bucket_idx(now_secs);
-        
+
         if self.bucket_start_idx == 0 && self.total_requests == 0 {
             // First request - initialize
             self.bucket_start_idx = now_idx;
@@ -106,7 +111,8 @@ impl GroupActivity {
         }
 
         // Move to the new bucket
-        self.current_bucket = (self.current_bucket + (elapsed_buckets as usize)) % ACTIVITY_BUCKET_COUNT as usize;
+        self.current_bucket =
+            (self.current_bucket + (elapsed_buckets as usize)) % ACTIVITY_BUCKET_COUNT as usize;
         self.bucket_start_idx = now_idx;
     }
 
@@ -172,7 +178,8 @@ impl ActivityTracker {
     /// Get all active groups (with any activity in the window)
     fn active_groups(&mut self) -> Vec<String> {
         let now_secs = self.now_secs();
-        self.groups.retain(|_, activity| !activity.is_inactive(now_secs));
+        self.groups
+            .retain(|_, activity| !activity.is_inactive(now_secs));
         self.groups.keys().cloned().collect()
     }
 
@@ -276,9 +283,7 @@ impl NntpFederatedService {
         let services: Vec<NntpService> = config
             .server
             .iter()
-            .map(|server_config| {
-                NntpService::new(server_config.clone(), config.nntp.clone())
-            })
+            .map(|server_config| NntpService::new(server_config.clone(), config.nntp.clone()))
             .collect();
 
         Self::with_services(
@@ -422,14 +427,14 @@ impl NntpFederatedService {
         let debounce_duration = Duration::from_millis(INCREMENTAL_DEBOUNCE_MS);
 
         let mut last_check = self.last_incremental_check.write().await;
-        
+
         if let Some(last) = last_check.get(group) {
             if now.duration_since(*last) < debounce_duration {
                 tracing::trace!(%group, "Incremental check debounced");
                 return false;
             }
         }
-        
+
         last_check.insert(group.to_string(), now);
         true
     }
@@ -440,7 +445,7 @@ impl NntpFederatedService {
     async fn mark_group_active(&self, group: &str) {
         let mut tracker = self.activity_tracker.write().await;
         tracker.record_request(group);
-        
+
         // Check if we need to spawn/update a refresh task for this group
         if !tracker.has_refresh_task(group) {
             drop(tracker); // Release lock before spawning
@@ -576,19 +581,20 @@ impl NntpFederatedService {
         // log10(10000) = 4 -> 1s
         // log10(1/300) ≈ -2.48 -> 30s (minimum activity = 1 request in 5 minutes)
         // We use the formula: period = max - (max - min) * (log10(rps) - log_min) / (log_max - log_min)
-        
+
         let log_rps = requests_per_second.log10();
         let log_min = (1.0 / ACTIVITY_WINDOW_SECS as f64).log10(); // ~-2.48 for 300s window
         let log_max = ACTIVITY_HIGH_RPS.log10(); // 4.0 for 10k rps
-        
+
         // Clamp to range
         let log_clamped = log_rps.clamp(log_min, log_max);
-        
+
         // Linear interpolation in log space
         let ratio = (log_clamped - log_min) / (log_max - log_min);
-        let period_secs = BACKGROUND_REFRESH_MAX_PERIOD_SECS as f64 
-            - ratio * (BACKGROUND_REFRESH_MAX_PERIOD_SECS - BACKGROUND_REFRESH_MIN_PERIOD_SECS) as f64;
-        
+        let period_secs = BACKGROUND_REFRESH_MAX_PERIOD_SECS as f64
+            - ratio
+                * (BACKGROUND_REFRESH_MAX_PERIOD_SECS - BACKGROUND_REFRESH_MIN_PERIOD_SECS) as f64;
+
         Duration::from_secs_f64(period_secs.max(BACKGROUND_REFRESH_MIN_PERIOD_SECS as f64))
     }
 
@@ -596,9 +602,9 @@ impl NntpFederatedService {
     async fn spawn_group_refresh_task(&self, group: String) {
         let this = self.clone();
         let group_clone = group.clone();
-        
+
         tracing::debug!(group = %group, "Spawning background refresh task");
-        
+
         let task = tokio::spawn(async move {
             loop {
                 // Get current request rate and calculate refresh period
@@ -606,37 +612,40 @@ impl NntpFederatedService {
                     let mut tracker = this.activity_tracker.write().await;
                     tracker.requests_per_second(&group_clone)
                 };
-                
+
                 let period = Self::calculate_refresh_period(rps);
-                
+
                 tracing::debug!(
                     group = %group_clone,
                     rps = %format!("{:.2}", rps),
                     period_secs = %period.as_secs_f64(),
                     "Group refresh scheduled"
                 );
-                
+
                 tokio::time::sleep(period).await;
-                
+
                 // Check if group is still active before refreshing
                 let still_active = {
                     let mut tracker = this.activity_tracker.write().await;
                     let active = tracker.active_groups();
                     active.contains(&group_clone)
                 };
-                
+
                 if !still_active {
                     tracing::debug!(group = %group_clone, "Group inactive, stopping refresh task");
                     break;
                 }
-                
+
                 // Perform the refresh
                 this.trigger_incremental_update(&group_clone).await;
             }
         });
-        
+
         // Store the task handle
-        self.activity_tracker.write().await.set_refresh_task(&group, task);
+        self.activity_tracker
+            .write()
+            .await
+            .set_refresh_task(&group, task);
     }
 
     /// Trigger an incremental update for a group (used by background refresh).
@@ -651,28 +660,274 @@ impl NntpFederatedService {
             }
             Ok(new_entries) => {
                 tracing::debug!(%group, count = new_entries.len(), "Found new articles");
-                
+
                 // Update threads cache if it exists
                 if let Some(cached) = self.threads_cache.get(group).await {
-                    let new_hwm = new_entries.iter()
+                    let new_hwm = new_entries
+                        .iter()
                         .filter_map(|e| e.number())
                         .max()
                         .unwrap_or(cached.last_article_number);
 
                     let merged = super::merge_articles_into_threads(&cached.threads, new_entries);
 
-                    self.threads_cache.insert(
-                        group.to_string(),
-                        CachedThreads {
-                            threads: merged,
-                            last_article_number: new_hwm,
-                        },
-                    ).await;
+                    self.threads_cache
+                        .insert(
+                            group.to_string(),
+                            CachedThreads {
+                                threads: merged,
+                                last_article_number: new_hwm,
+                            },
+                        )
+                        .await;
                 }
             }
             Err(e) => {
                 tracing::warn!(%group, error = %e, "Failed to fetch new articles");
             }
+        }
+    }
+
+    /// Check if an article exists on any configured server using STAT command.
+    ///
+    /// This is faster than get_article as it doesn't transfer content.
+    async fn check_article_exists(&self, message_id: &str) -> bool {
+        for service in &self.services {
+            if service
+                .check_article_exists(message_id)
+                .await
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Inject a pre-built article into cache after confirming server-side existence.
+    ///
+    /// Polls with STAT command until article exists, then injects the pre-built
+    /// ArticleView into caches. This is faster than fetching the full article
+    /// since we already have all the article data from the post submission.
+    ///
+    /// # Arguments
+    /// * `group` - The newsgroup the article was posted to
+    /// * `article` - Pre-built ArticleView from post data
+    /// * `root_message_id` - For replies, the root thread's message ID (for cache key)
+    /// * `parent_message_id` - For replies, the direct parent's message ID (for tree insertion)
+    pub async fn inject_posted_article(
+        &self,
+        group: &str,
+        article: ArticleView,
+        root_message_id: Option<&str>,
+        parent_message_id: Option<&str>,
+    ) {
+        let message_id = &article.message_id;
+
+        for attempt in 1..=POST_POLL_MAX_ATTEMPTS {
+            // Invalidate negative cache before each attempt
+            self.article_not_found_cache.invalidate(message_id).await;
+
+            if self.check_article_exists(message_id).await {
+                tracing::debug!(
+                    %group,
+                    %message_id,
+                    attempt,
+                    "Article confirmed via STAT, injecting into cache"
+                );
+
+                // Cache the article for future fetches
+                self.article_cache
+                    .insert(message_id.to_string(), article.clone())
+                    .await;
+
+                // Inject into threads/thread caches
+                self.inject_article_into_caches(group, article, root_message_id, parent_message_id)
+                    .await;
+                return;
+            }
+
+            if attempt < POST_POLL_MAX_ATTEMPTS {
+                tokio::time::sleep(Duration::from_millis(POST_POLL_INTERVAL_MS)).await;
+            }
+        }
+
+        // Timeout - article didn't appear within polling window
+        // Fall back to triggering incremental update
+        tracing::warn!(
+            %group,
+            %message_id,
+            max_attempts = POST_POLL_MAX_ATTEMPTS,
+            "Article not confirmed via STAT after polling, falling back to incremental update"
+        );
+
+        // Invalidate thread cache if this was a reply so next request fetches fresh
+        if let Some(root_id) = root_message_id {
+            let cache_key = format!("{}:{}", group, root_id);
+            self.thread_cache.invalidate(&cache_key).await;
+        }
+
+        self.trigger_incremental_update(group).await;
+    }
+
+    /// Inject a fetched article into threads_cache and thread_cache.
+    async fn inject_article_into_caches(
+        &self,
+        group: &str,
+        article: ArticleView,
+        root_message_id: Option<&str>,
+        parent_message_id: Option<&str>,
+    ) {
+        let message_id = article.message_id.clone();
+
+        match (root_message_id, parent_message_id) {
+            (None, None) => {
+                // New thread - add to threads_cache
+                self.inject_new_thread(group, article).await;
+            }
+            (Some(root_id), Some(parent_id)) => {
+                // Reply - update both caches
+                self.inject_reply(group, root_id, parent_id, article).await;
+            }
+            _ => {
+                // Shouldn't happen, but fall back to incremental update
+                tracing::warn!(
+                    %group,
+                    %message_id,
+                    "Unexpected cache injection state, triggering incremental update"
+                );
+                self.trigger_incremental_update(group).await;
+            }
+        }
+    }
+
+    /// Inject a new thread (root post) into threads_cache.
+    async fn inject_new_thread(&self, group: &str, article: ArticleView) {
+        let date_relative = Some(compute_timeago(&article.date));
+
+        // Create a new ThreadView for this article
+        let new_thread = ThreadView {
+            subject: article.subject.clone(),
+            root_message_id: article.message_id.clone(),
+            article_count: 1,
+            root: ThreadNodeView {
+                message_id: article.message_id.clone(),
+                article: Some(article.clone()),
+                replies: Vec::new(),
+                descendant_count: 0,
+            },
+            last_post_date: Some(article.date.clone()),
+            last_post_date_relative: date_relative,
+        };
+
+        // Get existing cache or create empty base
+        let (mut threads, last_article_number) =
+            if let Some(cached) = self.threads_cache.get(group).await {
+                (cached.threads.clone(), cached.last_article_number)
+            } else {
+                // No cache exists - start fresh with just this thread
+                // Note: last_article_number of 0 will trigger a full refresh on next incremental check,
+                // which is fine since we're bootstrapping the cache
+                (Vec::new(), 0)
+            };
+
+        // Prepend to thread list (newest first)
+        threads.insert(0, new_thread);
+
+        tracing::debug!(
+            %group,
+            message_id = %article.message_id,
+            "Injected new thread into cache"
+        );
+
+        self.threads_cache
+            .insert(
+                group.to_string(),
+                CachedThreads {
+                    threads,
+                    last_article_number,
+                },
+            )
+            .await;
+    }
+
+    /// Inject a reply into both threads_cache and thread_cache.
+    async fn inject_reply(
+        &self,
+        group: &str,
+        root_msg_id: &str,
+        parent_msg_id: &str,
+        article: ArticleView,
+    ) {
+        let new_node = ThreadNodeView {
+            message_id: article.message_id.clone(),
+            article: Some(article.clone()),
+            replies: Vec::new(),
+            descendant_count: 0,
+        };
+
+        // Update thread_cache
+        let cache_key = format!("{}:{}", group, root_msg_id);
+        if let Some(cached) = self.thread_cache.get(&cache_key).await {
+            let mut thread = cached.thread.clone();
+
+            // Add reply to the appropriate parent node
+            if add_reply_to_node(&mut thread.root, parent_msg_id, new_node.clone()) {
+                thread.article_count += 1;
+                thread.last_post_date = Some(article.date.clone());
+                thread.last_post_date_relative = Some(compute_timeago(&article.date));
+
+                tracing::debug!(
+                    %group,
+                    %root_msg_id,
+                    message_id = %article.message_id,
+                    "Injected reply into thread_cache"
+                );
+
+                self.thread_cache
+                    .insert(
+                        cache_key,
+                        CachedThread {
+                            thread,
+                            group: group.to_string(),
+                        },
+                    )
+                    .await;
+            }
+        }
+
+        // Update threads_cache (for reply count/last post date in list view)
+        if let Some(cached) = self.threads_cache.get(group).await {
+            let mut threads = cached.threads.clone();
+
+            if let Some(thread) = threads
+                .iter_mut()
+                .find(|t| t.root_message_id == root_msg_id)
+            {
+                // Add reply to thread tree
+                if add_reply_to_node(&mut thread.root, parent_msg_id, new_node) {
+                    thread.article_count += 1;
+                    thread.last_post_date = Some(article.date.clone());
+                    thread.last_post_date_relative = Some(compute_timeago(&article.date));
+
+                    tracing::debug!(
+                        %group,
+                        %root_msg_id,
+                        message_id = %article.message_id,
+                        "Injected reply into threads_cache"
+                    );
+                }
+            }
+
+            self.threads_cache
+                .insert(
+                    group.to_string(),
+                    CachedThreads {
+                        threads,
+                        last_article_number: cached.last_article_number,
+                    },
+                )
+                .await;
         }
     }
 
@@ -729,10 +984,10 @@ impl NntpFederatedService {
 
                     // Spawn tasks for new groups
                     for name in current_names {
-                        if !tasks.contains_key(&name) {
+                        if let Entry::Vacant(entry) = tasks.entry(name.clone()) {
                             tracing::debug!(group = %name, "Starting stats refresh for group");
-                            let handle = self.spawn_group_stats_refresh_task(name.clone());
-                            tasks.insert(name, handle);
+                            let handle = self.spawn_group_stats_refresh_task(name);
+                            entry.insert(handle);
                         }
                     }
                 }
@@ -776,11 +1031,11 @@ impl NntpFederatedService {
                     self.article_cache
                         .insert(message_id.to_string(), article.clone())
                         .await;
-                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+                    tracing::Span::current()
+                        .record("duration_ms", start.elapsed().as_millis() as u64);
                     return Ok(article);
                 }
                 Err(e) => {
-
                     // Track if we've seen any non-"not found" errors
                     if !Self::is_not_found_error(&e) {
                         all_not_found = false;
@@ -836,25 +1091,35 @@ impl NntpFederatedService {
                 let group_clone = group.to_string();
                 let cache_key_clone = cache_key.clone();
                 tokio::spawn(async move {
-                    if let Ok(new_entries) = self_clone.get_new_articles(&group_clone, cached.last_article_number).await {
+                    if let Ok(new_entries) = self_clone
+                        .get_new_articles(&group_clone, cached.last_article_number)
+                        .await
+                    {
                         if !new_entries.is_empty() {
-                            let new_hwm = new_entries.iter()
+                            let new_hwm = new_entries
+                                .iter()
                                 .filter_map(|e| e.number())
                                 .max()
                                 .unwrap_or(cached.last_article_number);
-                            
+
                             // Re-fetch cached data to merge (it may have been updated)
-                            if let Some(current) = self_clone.threads_cache.get(&cache_key_clone).await {
-                                let merged = merge_articles_into_threads(&current.threads, new_entries);
-                                self_clone.threads_cache.insert(
-                                    cache_key_clone,
-                                    CachedThreads {
-                                        threads: merged,
-                                        last_article_number: new_hwm,
-                                    },
-                                ).await;
+                            if let Some(current) =
+                                self_clone.threads_cache.get(&cache_key_clone).await
+                            {
+                                let merged =
+                                    merge_articles_into_threads(&current.threads, new_entries);
+                                self_clone
+                                    .threads_cache
+                                    .insert(
+                                        cache_key_clone,
+                                        CachedThreads {
+                                            threads: merged,
+                                            last_article_number: new_hwm,
+                                        },
+                                    )
+                                    .await;
                             }
-                            
+
                             self_clone.update_group_hwm(&group_clone, new_hwm).await;
                         }
                     }
@@ -1005,20 +1270,20 @@ impl NntpFederatedService {
             .iter()
             .enumerate()
             .map(|(i, thread)| {
-                let parsed = thread.last_post_date.as_ref()
+                let parsed = thread
+                    .last_post_date
+                    .as_ref()
                     .and_then(|d| DateTime::parse_from_rfc2822(d).ok());
                 (i, parsed)
             })
             .collect();
 
         // Sort indices based on pre-parsed dates
-        indexed_threads.sort_by(|(_, a_parsed), (_, b_parsed)| {
-            match (b_parsed, a_parsed) {
-                (Some(b_dt), Some(a_dt)) => b_dt.cmp(a_dt),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
+        indexed_threads.sort_by(|(_, a_parsed), (_, b_parsed)| match (b_parsed, a_parsed) {
+            (Some(b_dt), Some(a_dt)) => b_dt.cmp(a_dt),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
         });
 
         // Reorder original vector based on sorted indices
@@ -1071,20 +1336,26 @@ impl NntpFederatedService {
                     // Get HWM for the group
                     let hwm = self_clone.get_group_hwm(&group_clone).await;
                     if hwm > 0 {
-                        if let Ok(new_entries) = self_clone.get_new_articles(&group_clone, hwm).await {
+                        if let Ok(new_entries) =
+                            self_clone.get_new_articles(&group_clone, hwm).await
+                        {
                             if !new_entries.is_empty() {
                                 // Merge new articles into this specific thread
-                                let merged = merge_articles_into_thread(&cached_thread, new_entries);
-                                
+                                let merged =
+                                    merge_articles_into_thread(&cached_thread, new_entries);
+
                                 // Update cache if thread was modified
                                 if merged.article_count > cached_thread.article_count {
-                                    self_clone.thread_cache.insert(
-                                        cache_key_clone,
-                                        CachedThread {
-                                            thread: merged,
-                                            group: group_clone.clone(),
-                                        },
-                                    ).await;
+                                    self_clone
+                                        .thread_cache
+                                        .insert(
+                                            cache_key_clone,
+                                            CachedThread {
+                                                thread: merged,
+                                                group: group_clone.clone(),
+                                            },
+                                        )
+                                        .await;
                                 }
                             }
                         }
@@ -1107,19 +1378,31 @@ impl NntpFederatedService {
         }
 
         // Look up the thread from threads_cache
-        let cached_threads = self.threads_cache.get(group).await
+        let cached_threads = self
+            .threads_cache
+            .get(group)
+            .await
             .ok_or_else(|| AppError::Internal("Failed to populate threads cache".into()))?;
 
-        let thread = cached_threads.threads.iter()
+        let thread = cached_threads
+            .threads
+            .iter()
             .find(|t| t.root_message_id == *message_id || t.root.contains_message_id(message_id))
             .cloned()
-            .ok_or_else(|| AppError::ArticleNotFound(format!("Thread not found: {}", message_id)))?;
+            .ok_or_else(|| {
+                AppError::ArticleNotFound(format!("Thread not found: {}", message_id))
+            })?;
 
         // Cache in thread_cache for direct future lookups
-        self.thread_cache.insert(cache_key, CachedThread {
-            thread: thread.clone(),
-            group: group.to_string(),
-        }).await;
+        self.thread_cache
+            .insert(
+                cache_key,
+                CachedThread {
+                    thread: thread.clone(),
+                    group: group.to_string(),
+                },
+            )
+            .await;
 
         // Mark group as active
         self.mark_group_active(group).await;
@@ -1143,7 +1426,9 @@ impl NntpFederatedService {
 
         // Flatten and determine which message IDs need bodies
         let (mut comments, pagination, page_msg_ids) =
-            thread.root.flatten_paginated(page, per_page, collapse_threshold);
+            thread
+                .root
+                .flatten_paginated(page, per_page, collapse_threshold);
 
         // Collect bodies: check article cache first, then fetch missing ones
         let mut bodies: HashMap<String, ArticleView> = HashMap::new();
@@ -1183,8 +1468,7 @@ impl NntpFederatedService {
         }
 
         // Populate bodies in the flattened comments for current page only
-        let page_ids_set: std::collections::HashSet<String> =
-            page_msg_ids.into_iter().collect();
+        let page_ids_set: std::collections::HashSet<String> = page_msg_ids.into_iter().collect();
         let start = (page - 1) * per_page;
         let end = (start + per_page).min(comments.len());
 
@@ -1374,8 +1658,7 @@ impl NntpFederatedService {
             // Double-check cache and pending after acquiring write lock
             if let Some(groups) = self.groups_cache.get(&cache_key).await {
                 tracing::Span::current().record("cache_hit", true);
-                tracing::Span::current()
-                    .record("duration_ms", start.elapsed().as_millis() as u64);
+                tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
                 return Ok(groups);
             }
             if let Some(ref existing_tx) = *pending {
@@ -1489,7 +1772,9 @@ impl NntpFederatedService {
             match service.get_group_stats(group).await {
                 Ok(stats) => {
                     // Cache the result
-                    self.group_stats_cache.insert(group.to_string(), stats.clone()).await;
+                    self.group_stats_cache
+                        .insert(group.to_string(), stats.clone())
+                        .await;
                     result = Some(stats);
                     break;
                 }
@@ -1576,7 +1861,10 @@ impl NntpFederatedService {
 
     /// Get cached thread counts for a list of group names in parallel.
     /// Returns a map of group name to thread count.
-    pub async fn get_all_cached_thread_counts_for(&self, group_names: &[String]) -> HashMap<String, usize> {
+    pub async fn get_all_cached_thread_counts_for(
+        &self,
+        group_names: &[String],
+    ) -> HashMap<String, usize> {
         let futures: Vec<_> = group_names
             .iter()
             .map(|name| {
@@ -1607,7 +1895,7 @@ impl NntpFederatedService {
             return true;
         }
         drop(posting);
-        
+
         // Fall back to checking if any server carries this group
         let servers = self.group_servers.read().await;
         servers.get(group).map(|v| !v.is_empty()).unwrap_or(false)
@@ -1627,24 +1915,26 @@ impl NntpFederatedService {
         body: String,
     ) -> Result<(), AppError> {
         let start = Instant::now();
-        
+
         // Get servers that support posting to this group
         let server_indices = {
             let servers = self.posting_servers.read().await;
             servers.get(group).cloned().unwrap_or_default()
         };
-        
+
         // If no posting servers known, fall back to all servers for this group
         let server_indices = if server_indices.is_empty() {
             self.get_servers_for_group(group).await
         } else {
             server_indices
         };
-        
+
         if server_indices.is_empty() {
-            return Err(AppError::Internal("No servers support posting to this group".into()));
+            return Err(AppError::Internal(
+                "No servers support posting to this group".into(),
+            ));
         }
-        
+
         // Try each server that supports posting
         let mut last_error = None;
         for idx in server_indices {
@@ -1656,7 +1946,8 @@ impl NntpFederatedService {
                         server = %service.name(),
                         "Article posted successfully"
                     );
-                    tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
+                    tracing::Span::current()
+                        .record("duration_ms", start.elapsed().as_millis() as u64);
                     return Ok(());
                 }
                 Err(e) => {
@@ -1670,7 +1961,7 @@ impl NntpFederatedService {
                 }
             }
         }
-        
+
         tracing::Span::current().record("duration_ms", start.elapsed().as_millis() as u64);
         Err(last_error
             .map(|e| AppError::Internal(format!("Failed to post article: {}", e.0)))

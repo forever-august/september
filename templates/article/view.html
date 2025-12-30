@@ -44,6 +44,7 @@
             <input type="hidden" name="group" value="{{ group }}">
             <input type="hidden" name="subject" value="Re: {{ article.subject }}">
             <input type="hidden" name="references" value="{{ article.references | default(value='') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <textarea name="body" required rows="8" placeholder="Write your reply..."></textarea>
             <div class="reply-form-actions">
                 <button type="submit" class="submit-button">Post Reply</button>

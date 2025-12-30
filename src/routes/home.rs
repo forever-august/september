@@ -12,6 +12,7 @@ use axum::{
 };
 use tracing::instrument;
 
+use super::insert_auth_context;
 use crate::error::{AppError, AppErrorResponse, ResultExt};
 use crate::middleware::{CurrentUser, RequestId};
 use crate::nntp::GroupTreeNode;
@@ -42,7 +43,11 @@ fn extract_top_level_group_names(nodes: &[GroupTreeNode]) -> Vec<String> {
 async fn get_stats_for_groups(
     state: &AppState,
     group_names: &[String],
-) -> (HashMap<String, Option<String>>, HashMap<String, usize>, Vec<String>) {
+) -> (
+    HashMap<String, Option<String>>,
+    HashMap<String, usize>,
+    Vec<String>,
+) {
     // Fetch group stats and thread counts in parallel
     let (stats_result, thread_counts) = tokio::join!(
         state.nntp.get_all_cached_group_stats(group_names),
@@ -92,14 +97,8 @@ pub async fn index(
     context.insert("breadcrumbs", &Vec::<(&str, &str)>::new());
     context.insert("group_stats", &group_stats);
     context.insert("thread_counts", &thread_counts);
-    
-    // Auth context for header
-    context.insert("oidc_enabled", &state.oidc.is_some());
-    if let Some(user) = current_user.0.as_ref() {
-        context.insert("user", &serde_json::json!({
-            "display_name": user.display_name(),
-        }));
-    }
+
+    insert_auth_context(&mut context, &state, &current_user, false);
 
     let html = state
         .tera
@@ -179,14 +178,8 @@ pub async fn browse(
     context.insert("current_node", &current_node);
     context.insert("group_stats", &group_stats);
     context.insert("thread_counts", &thread_counts);
-    
-    // Auth context for header
-    context.insert("oidc_enabled", &state.oidc.is_some());
-    if let Some(user) = current_user.0.as_ref() {
-        context.insert("user", &serde_json::json!({
-            "display_name": user.display_name(),
-        }));
-    }
+
+    insert_auth_context(&mut context, &state, &current_user, false);
 
     let html = state
         .tera

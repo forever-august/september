@@ -7,9 +7,8 @@ use chrono::{DateTime, Utc};
 use tera::Tera;
 
 use crate::config::{
-    DEFAULT_PREVIEW_LINES, DEFAULT_TRUNCATE_WORDS, PREVIEW_HARD_LIMIT,
-    SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, SECONDS_PER_MONTH, SECONDS_PER_YEAR,
-    TEMPLATE_GLOB,
+    DEFAULT_PREVIEW_LINES, DEFAULT_TRUNCATE_WORDS, PREVIEW_HARD_LIMIT, SECONDS_PER_DAY,
+    SECONDS_PER_HOUR, SECONDS_PER_MINUTE, SECONDS_PER_MONTH, SECONDS_PER_YEAR, TEMPLATE_GLOB,
 };
 use crate::error::AppError;
 
@@ -123,12 +122,12 @@ fn timeago_filter(
 /// (e.g., "On Thu, 30 Oct 2025, John Smith wrote:")
 fn is_quote_line(line: &str) -> bool {
     let trimmed = line.trim_start();
-    
+
     // Lines starting with > are block quotes
     if trimmed.starts_with('>') {
         return true;
     }
-    
+
     // Check for quote attribution lines like "On <date>, <name> wrote:"
     if trimmed.starts_with("On ") && trimmed.ends_with(':') {
         // Look for common patterns: "wrote:", "writes:", "said:", "says:"
@@ -141,7 +140,7 @@ fn is_quote_line(line: &str) -> bool {
             return true;
         }
     }
-    
+
     // Check for "name <email> writes:" pattern
     if trimmed.ends_with(':') && trimmed.contains('<') && trimmed.contains('>') {
         let lower = trimmed.to_lowercase();
@@ -153,7 +152,7 @@ fn is_quote_line(line: &str) -> bool {
             return true;
         }
     }
-    
+
     false
 }
 
@@ -185,7 +184,7 @@ fn strip_block_quotes(s: &str) -> String {
             break;
         }
     }
-    
+
     // Skip any remaining empty lines at the start
     while start < lines.len() && lines[start].trim().is_empty() {
         start += 1;
@@ -211,7 +210,7 @@ fn strip_block_quotes(s: &str) -> String {
             break;
         }
     }
-    
+
     // Skip any remaining empty lines at the end
     while end > start && lines[end - 1].trim().is_empty() {
         end -= 1;
@@ -253,9 +252,13 @@ fn preview_filter(
         }
         // Find next line break after hard limit
         if let Some(pos) = stripped[PREVIEW_HARD_LIMIT..].find('\n') {
-            return Ok(tera::Value::String(stripped[..PREVIEW_HARD_LIMIT + pos].to_string()));
+            return Ok(tera::Value::String(
+                stripped[..PREVIEW_HARD_LIMIT + pos].to_string(),
+            ));
         }
-        return Ok(tera::Value::String(stripped[..PREVIEW_HARD_LIMIT].to_string()));
+        return Ok(tera::Value::String(
+            stripped[..PREVIEW_HARD_LIMIT].to_string(),
+        ));
     }
 
     // Over line limit: take max_lines, then continue to next line break
@@ -308,7 +311,9 @@ fn has_more_lines_filter(
     let stripped = strip_block_quotes(s);
 
     let line_count = stripped.lines().count();
-    Ok(tera::Value::Bool(line_count > max_lines || stripped.len() > PREVIEW_HARD_LIMIT))
+    Ok(tera::Value::Bool(
+        line_count > max_lines || stripped.len() > PREVIEW_HARD_LIMIT,
+    ))
 }
 
 #[cfg(test)]
@@ -331,14 +336,16 @@ mod tests {
     #[test]
     fn test_strip_block_quotes_with_attribution_no_whitespace() {
         // Attribution line directly followed by block quote (no empty line)
-        let input = "On Wed, 29 Oct 2025, John Smith wrote:\n> Hello,\n> Quoted text.\n\nActual content.";
+        let input =
+            "On Wed, 29 Oct 2025, John Smith wrote:\n> Hello,\n> Quoted text.\n\nActual content.";
         assert_eq!(strip_block_quotes(input), "Actual content.");
     }
 
     #[test]
     fn test_strip_block_quotes_with_attribution_and_whitespace() {
         // Attribution line followed by empty line then block quote
-        let input = "On Wed, 29 Oct 2025, John Smith wrote:\n\n> Hello,\n> Quoted text.\n\nActual content.";
+        let input =
+            "On Wed, 29 Oct 2025, John Smith wrote:\n\n> Hello,\n> Quoted text.\n\nActual content.";
         assert_eq!(strip_block_quotes(input), "Actual content.");
     }
 
@@ -358,7 +365,10 @@ mod tests {
     fn test_strip_block_quotes_preserves_middle() {
         // Quotes in the middle of content are preserved
         let input = "Start content.\n\n> Quoted in middle.\n\nEnd content.";
-        assert_eq!(strip_block_quotes(input), "Start content.\n\n> Quoted in middle.\n\nEnd content.");
+        assert_eq!(
+            strip_block_quotes(input),
+            "Start content.\n\n> Quoted in middle.\n\nEnd content."
+        );
     }
 
     #[test]

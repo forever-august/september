@@ -3,7 +3,7 @@
 //! Provides:
 //! - Request ID generation for log correlation
 //! - Session extraction and refresh (sliding window)
-//! - RequireAuth extractor for protected routes
+//! - RequireAuthWithEmail extractor for posting routes
 
 use std::time::Duration;
 use std::time::Instant;
@@ -32,35 +32,11 @@ pub struct RequestId(pub Uuid);
 #[derive(Clone, Debug)]
 pub struct CurrentUser(pub Option<User>);
 
-impl CurrentUser {
-    /// Get a reference to the user, if authenticated
-    pub fn user(&self) -> Option<&User> {
-        self.0.as_ref()
-    }
-}
-
-/// Extractor that requires authentication.
-/// 
-/// Use this in route handlers that require an authenticated user.
-/// If the user is not authenticated, returns a 401 Unauthorized response.
-/// 
-/// # Example
-/// ```ignore
-/// pub async fn protected_handler(
-///     RequireAuth(user): RequireAuth,
-/// ) -> impl IntoResponse {
-///     // user is guaranteed to be authenticated here
-///     format!("Hello, {}!", user.display_name())
-/// }
-/// ```
-#[derive(Clone, Debug)]
-pub struct RequireAuth(pub User);
-
 /// Extractor that requires authentication with a valid email.
-/// 
+///
 /// Use this for posting routes that require both authentication and an email address.
 /// Returns appropriate errors if not authenticated or if email is missing.
-/// 
+///
 /// # Example
 /// ```ignore
 /// pub async fn post_handler(
@@ -137,26 +113,6 @@ impl IntoResponse for AuthError {
 </html>"#;
                 (StatusCode::FORBIDDEN, axum::response::Html(body)).into_response()
             }
-        }
-    }
-}
-
-impl<S> FromRequestParts<S> for RequireAuth
-where
-    S: Send + Sync,
-{
-    type Rejection = AuthError;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let current_user = parts
-            .extensions
-            .get::<CurrentUser>()
-            .cloned()
-            .unwrap_or(CurrentUser(None));
-
-        match current_user.0 {
-            Some(user) if !user.is_expired() => Ok(RequireAuth(user)),
-            _ => Err(AuthError::NotAuthenticated),
         }
     }
 }

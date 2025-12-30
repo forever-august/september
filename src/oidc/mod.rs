@@ -13,7 +13,9 @@ use std::time::Duration;
 use axum_extra::extract::cookie::Key;
 use hkdf::Hkdf;
 use openidconnect::core::CoreProviderMetadata;
-use openidconnect::{AuthUrl, ClientId, ClientSecret, IssuerUrl, RedirectUrl, TokenUrl, UserInfoUrl};
+use openidconnect::{
+    AuthUrl, ClientId, ClientSecret, IssuerUrl, RedirectUrl, TokenUrl, UserInfoUrl,
+};
 use sha2::Sha256;
 
 use crate::config::{OidcConfig, OidcProviderConfig};
@@ -102,9 +104,9 @@ impl OidcManager {
     /// This performs async discovery for providers using issuer_url.
     pub async fn new(config: &OidcConfig) -> Result<Self, OidcError> {
         // Resolve and derive cookie key
-        let secret = config.resolve_cookie_secret().map_err(|e| {
-            OidcError::Config(format!("Failed to resolve cookie secret: {}", e))
-        })?;
+        let secret = config
+            .resolve_cookie_secret()
+            .map_err(|e| OidcError::Config(format!("Failed to resolve cookie secret: {}", e)))?;
 
         // Derive a 64-byte key from the secret using HKDF
         let cookie_key = derive_cookie_key(&secret);
@@ -270,25 +272,24 @@ fn init_provider_manual(
     client_id: ClientId,
     client_secret: ClientSecret,
 ) -> Result<OidcProvider, OidcError> {
-    let auth_url = AuthUrl::new(config.auth_url.clone().unwrap()).map_err(|e| {
-        OidcError::InvalidUrl {
+    let auth_url =
+        AuthUrl::new(config.auth_url.clone().unwrap()).map_err(|e| OidcError::InvalidUrl {
             provider: config.name.clone(),
             message: format!("Invalid auth URL: {}", e),
-        }
-    })?;
+        })?;
 
-    let token_url = TokenUrl::new(config.token_url.clone().unwrap()).map_err(|e| {
-        OidcError::InvalidUrl {
+    let token_url =
+        TokenUrl::new(config.token_url.clone().unwrap()).map_err(|e| OidcError::InvalidUrl {
             provider: config.name.clone(),
             message: format!("Invalid token URL: {}", e),
-        }
-    })?;
+        })?;
 
-    let userinfo_url =
-        UserInfoUrl::new(config.userinfo_url.clone().unwrap()).map_err(|e| OidcError::InvalidUrl {
+    let userinfo_url = UserInfoUrl::new(config.userinfo_url.clone().unwrap()).map_err(|e| {
+        OidcError::InvalidUrl {
             provider: config.name.clone(),
             message: format!("Invalid userinfo URL: {}", e),
-        })?;
+        }
+    })?;
 
     Ok(OidcProvider {
         name: config.name.clone(),
