@@ -9,6 +9,7 @@
 
 pub mod article;
 pub mod auth;
+pub mod health;
 pub mod home;
 pub mod post;
 pub mod privacy;
@@ -152,6 +153,9 @@ pub fn create_router(state: AppState) -> Router {
             HeaderValue::from_static(CACHE_CONTROL_HOME),
         ));
 
+    // Health check - no caching, always fresh for liveness probes
+    let health_routes = Router::new().route("/health", get(health::health));
+
     Router::new()
         .merge(article_routes)
         .merge(thread_view_routes)
@@ -160,6 +164,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(auth_routes)
         .merge(post_routes)
         .merge(privacy_routes)
+        .merge(health_routes)
         .merge(static_routes)
         .with_state(state.clone())
         // Auth layer - extracts user from session cookie and handles session refresh

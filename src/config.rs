@@ -907,3 +907,353 @@ impl OidcProviderConfig {
         resolve_secret(&self.client_secret)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    // =============================================================================
+    // resolve_secret tests
+    // =============================================================================
+
+    #[test]
+    fn test_resolve_secret_literal() {
+        let result = resolve_secret("my_literal_secret").unwrap();
+        assert_eq!(result, "my_literal_secret");
+    }
+
+    #[test]
+    fn test_resolve_secret_env() {
+        std::env::set_var("TEST_SECRET_VAR_12345", "secret_from_env");
+        let result = resolve_secret("env:TEST_SECRET_VAR_12345").unwrap();
+        assert_eq!(result, "secret_from_env");
+        std::env::remove_var("TEST_SECRET_VAR_12345");
+    }
+
+    #[test]
+    fn test_resolve_secret_env_missing() {
+        // Use a var name that definitely doesn't exist
+        let result = resolve_secret("env:NONEXISTENT_VAR_XYZZY_98765");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConfigError::SecretResolution(_)));
+    }
+
+    #[test]
+    fn test_resolve_secret_file() {
+        // Create a temp file with a secret
+        let mut temp_file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(temp_file, "  secret_from_file  ").unwrap();
+        let path = temp_file.path().to_str().unwrap();
+
+        let result = resolve_secret(&format!("file:{}", path)).unwrap();
+        assert_eq!(result, "secret_from_file"); // Should be trimmed
+    }
+
+    #[test]
+    fn test_resolve_secret_file_missing() {
+        let result = resolve_secret("file:/nonexistent/path/to/secret/file");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConfigError::SecretResolution(_)));
+    }
+
+    // =============================================================================
+    // TlsConfig validation tests
+    // =============================================================================
+
+    #[test]
+    fn test_tls_config_validate_none_ok() {
+        let config = TlsConfig {
+            mode: TlsMode::None,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tls_config_validate_acme_missing_domains() {
+        let config = TlsConfig {
+            mode: TlsMode::Acme,
+            acme_domains: vec![],
+            acme_email: Some("admin@example.com".to_string()),
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("acme_domains"));
+    }
+
+    #[test]
+    fn test_tls_config_validate_acme_missing_email() {
+        let config = TlsConfig {
+            mode: TlsMode::Acme,
+            acme_domains: vec!["example.com".to_string()],
+            acme_email: None,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("acme_email"));
+    }
+
+    #[test]
+    fn test_tls_config_validate_acme_valid() {
+        let config = TlsConfig {
+            mode: TlsMode::Acme,
+            acme_domains: vec!["example.com".to_string()],
+            acme_email: Some("admin@example.com".to_string()),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tls_config_validate_manual_missing_cert() {
+        let config = TlsConfig {
+            mode: TlsMode::Manual,
+            cert_path: None,
+            key_path: Some("/path/to/key.pem".to_string()),
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("cert_path"));
+    }
+
+    #[test]
+    fn test_tls_config_validate_manual_missing_key() {
+        let config = TlsConfig {
+            mode: TlsMode::Manual,
+            cert_path: Some("/path/to/cert.pem".to_string()),
+            key_path: None,
+            ..Default::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("key_path"));
+    }
+
+    #[test]
+    fn test_tls_config_validate_manual_valid() {
+        let config = TlsConfig {
+            mode: TlsMode::Manual,
+            cert_path: Some("/path/to/cert.pem".to_string()),
+            key_path: Some("/path/to/key.pem".to_string()),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_tls_config_is_enabled() {
+        assert!(TlsConfig {
+            mode: TlsMode::Acme,
+            ..Default::default()
+        }
+        .is_enabled());
+        assert!(TlsConfig {
+            mode: TlsMode::Manual,
+            ..Default::default()
+        }
+        .is_enabled());
+        assert!(!TlsConfig {
+            mode: TlsMode::None,
+            ..Default::default()
+        }
+        .is_enabled());
+    }
+
+    // =============================================================================
+    // OidcProviderConfig validation tests
+    // =============================================================================
+
+    fn make_provider(name: &str) -> OidcProviderConfig {
+        OidcProviderConfig {
+            name: name.to_string(),
+            display_name: "Test Provider".to_string(),
+            issuer_url: None,
+            auth_url: None,
+            token_url: None,
+            userinfo_url: None,
+            client_id: "client123".to_string(),
+            client_secret: "secret456".to_string(),
+            userinfo_sub_field: "sub".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_oidc_provider_validate_discovery_valid() {
+        let mut provider = make_provider("google");
+        provider.issuer_url = Some("https://accounts.google.com".to_string());
+        assert!(provider.validate().is_ok());
+    }
+
+    #[test]
+    fn test_oidc_provider_validate_manual_valid() {
+        let mut provider = make_provider("github");
+        provider.auth_url = Some("https://github.com/login/oauth/authorize".to_string());
+        provider.token_url = Some("https://github.com/login/oauth/access_token".to_string());
+        provider.userinfo_url = Some("https://api.github.com/user".to_string());
+        assert!(provider.validate().is_ok());
+    }
+
+    #[test]
+    fn test_oidc_provider_validate_discovery_and_manual_conflict() {
+        let mut provider = make_provider("conflicted");
+        provider.issuer_url = Some("https://issuer.example.com".to_string());
+        provider.auth_url = Some("https://auth.example.com".to_string());
+
+        let result = provider.validate();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("cannot specify both"));
+    }
+
+    #[test]
+    fn test_oidc_provider_validate_neither_discovery_nor_manual() {
+        let provider = make_provider("empty");
+        let result = provider.validate();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("must specify either"));
+    }
+
+    #[test]
+    fn test_oidc_provider_validate_manual_incomplete_missing_auth() {
+        let mut provider = make_provider("incomplete");
+        provider.token_url = Some("https://token.example.com".to_string());
+        provider.userinfo_url = Some("https://userinfo.example.com".to_string());
+
+        let result = provider.validate();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("auth_url"));
+    }
+
+    #[test]
+    fn test_oidc_provider_validate_manual_incomplete_missing_token() {
+        let mut provider = make_provider("incomplete");
+        provider.auth_url = Some("https://auth.example.com".to_string());
+        provider.userinfo_url = Some("https://userinfo.example.com".to_string());
+
+        let result = provider.validate();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("token_url"));
+    }
+
+    #[test]
+    fn test_oidc_provider_validate_manual_incomplete_missing_userinfo() {
+        let mut provider = make_provider("incomplete");
+        provider.auth_url = Some("https://auth.example.com".to_string());
+        provider.token_url = Some("https://token.example.com".to_string());
+
+        let result = provider.validate();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("userinfo_url"));
+    }
+
+    #[test]
+    fn test_oidc_provider_validate_name_valid_chars() {
+        let mut provider = make_provider("my-provider_123");
+        provider.issuer_url = Some("https://issuer.example.com".to_string());
+        assert!(provider.validate().is_ok());
+    }
+
+    #[test]
+    fn test_oidc_provider_validate_name_special_chars() {
+        let mut provider = make_provider("my provider!");
+        provider.issuer_url = Some("https://issuer.example.com".to_string());
+
+        let result = provider.validate();
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("alphanumeric"));
+    }
+
+    // =============================================================================
+    // NntpServerConfig tests
+    // =============================================================================
+
+    #[test]
+    fn test_nntp_server_config_worker_count_default() {
+        let config = NntpServerConfig {
+            name: "test".to_string(),
+            host: "news.example.com".to_string(),
+            port: 119,
+            timeout_seconds: None,
+            request_timeout_seconds: None,
+            worker_count: None,
+            username: None,
+            password: None,
+            allow_insecure_auth: false,
+        };
+        assert_eq!(config.worker_count(), 4);
+    }
+
+    #[test]
+    fn test_nntp_server_config_worker_count_custom() {
+        let config = NntpServerConfig {
+            name: "test".to_string(),
+            host: "news.example.com".to_string(),
+            port: 119,
+            timeout_seconds: None,
+            request_timeout_seconds: None,
+            worker_count: Some(8),
+            username: None,
+            password: None,
+            allow_insecure_auth: false,
+        };
+        assert_eq!(config.worker_count(), 8);
+    }
+
+    #[test]
+    fn test_nntp_server_config_has_credentials() {
+        let mut config = NntpServerConfig {
+            name: "test".to_string(),
+            host: "news.example.com".to_string(),
+            port: 119,
+            timeout_seconds: None,
+            request_timeout_seconds: None,
+            worker_count: None,
+            username: None,
+            password: None,
+            allow_insecure_auth: false,
+        };
+
+        assert!(!config.has_credentials());
+
+        config.username = Some("user".to_string());
+        assert!(!config.has_credentials()); // Needs both
+
+        config.password = Some("pass".to_string());
+        assert!(config.has_credentials());
+    }
+
+    #[test]
+    fn test_nntp_server_config_requires_tls_for_credentials() {
+        let mut config = NntpServerConfig {
+            name: "test".to_string(),
+            host: "news.example.com".to_string(),
+            port: 119,
+            timeout_seconds: None,
+            request_timeout_seconds: None,
+            worker_count: None,
+            username: Some("user".to_string()),
+            password: Some("pass".to_string()),
+            allow_insecure_auth: false,
+        };
+
+        assert!(config.requires_tls_for_credentials());
+
+        config.allow_insecure_auth = true;
+        assert!(!config.requires_tls_for_credentials());
+    }
+}

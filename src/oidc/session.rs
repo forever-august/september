@@ -181,3 +181,234 @@ pub mod cookie_names {
     /// Temporary cookie for OAuth2 flow state
     pub const AUTH_FLOW: &str = "september_auth_flow";
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_user_new_sets_expiry() {
+        let lifetime = Duration::from_secs(3600); // 1 hour
+        let user = User::new(
+            "sub123".to_string(),
+            Some("Test User".to_string()),
+            Some("test@example.com".to_string()),
+            "google".to_string(),
+            lifetime,
+        );
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Expiry should be approximately now + 1 hour (within 2 seconds tolerance)
+        assert!(user.expires_at >= now + 3598);
+        assert!(user.expires_at <= now + 3602);
+    }
+
+    #[test]
+    fn test_user_is_expired_false_when_fresh() {
+        let user = User::new(
+            "sub123".to_string(),
+            None,
+            None,
+            "google".to_string(),
+            Duration::from_secs(3600),
+        );
+        assert!(!user.is_expired());
+    }
+
+    #[test]
+    fn test_user_is_expired_true_when_past() {
+        let mut user = User::new(
+            "sub123".to_string(),
+            None,
+            None,
+            "google".to_string(),
+            Duration::from_secs(3600),
+        );
+        // Set expiry to the past
+        user.expires_at = 0;
+        assert!(user.is_expired());
+    }
+
+    #[test]
+    fn test_user_should_refresh_false_when_fresh() {
+        let lifetime = Duration::from_secs(3600);
+        let user = User::new(
+            "sub123".to_string(),
+            None,
+            None,
+            "google".to_string(),
+            lifetime,
+        );
+        // Fresh session should not need refresh (has > 20% lifetime remaining)
+        assert!(!user.should_refresh(lifetime));
+    }
+
+    #[test]
+    fn test_user_should_refresh_true_near_expiry() {
+        let lifetime = Duration::from_secs(3600);
+        let mut user = User::new(
+            "sub123".to_string(),
+            None,
+            None,
+            "google".to_string(),
+            lifetime,
+        );
+        // Set expiry to 5 minutes from now (less than 20% of 1 hour = 12 minutes)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        user.expires_at = now + 300; // 5 minutes
+
+        assert!(user.should_refresh(lifetime));
+    }
+
+    #[test]
+    fn test_user_refresh_extends_expiry() {
+        let lifetime = Duration::from_secs(3600);
+        let mut user = User::new(
+            "sub123".to_string(),
+            None,
+            None,
+            "google".to_string(),
+            Duration::from_secs(60), // Short initial lifetime
+        );
+
+        let old_expiry = user.expires_at;
+        user.refresh(lifetime);
+
+        // New expiry should be greater than old expiry
+        assert!(user.expires_at > old_expiry);
+
+        // New expiry should be approximately now + 1 hour
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(user.expires_at >= now + 3598);
+        assert!(user.expires_at <= now + 3602);
+    }
+
+    #[test]
+    fn test_user_display_name_prefers_name() {
+        let user = User::new(
+            "sub123".to_string(),
+            Some("John Doe".to_string()),
+            Some("john@example.com".to_string()),
+            "google".to_string(),
+            Duration::from_secs(3600),
+        );
+        assert_eq!(user.display_name(), "John Doe");
+    }
+
+    #[test]
+    fn test_user_display_name_falls_back_to_email() {
+        let user = User::new(
+            "sub123".to_string(),
+            None,
+            Some("john@example.com".to_string()),
+            "google".to_string(),
+            Duration::from_secs(3600),
+        );
+        assert_eq!(user.display_name(), "john@example.com");
+    }
+
+    #[test]
+    fn test_user_display_name_falls_back_to_sub() {
+        let user = User::new(
+            "sub123".to_string(),
+            None,
+            None,
+            "google".to_string(),
+            Duration::from_secs(3600),
+        );
+        assert_eq!(user.display_name(), "sub123");
+    }
+
+    #[test]
+    fn test_user_validate_csrf_valid() {
+        let user = User::new(
+            "sub123".to_string(),
+            None,
+            None,
+            "google".to_string(),
+            Duration::from_secs(3600),
+        );
+        let token = user.csrf_token.clone();
+        assert!(user.validate_csrf(&token));
+    }
+
+    #[test]
+    fn test_user_validate_csrf_invalid() {
+        let user = User::new(
+            "sub123".to_string(),
+            None,
+            None,
+            "google".to_string(),
+            Duration::from_secs(3600),
+        );
+        assert!(!user.validate_csrf("invalid_token_12345"));
+    }
+
+    #[test]
+    fn test_user_validate_csrf_different_length() {
+        let user = User::new(
+            "sub123".to_string(),
+            None,
+            None,
+            "google".to_string(),
+            Duration::from_secs(3600),
+        );
+        // Different length should fail fast
+        assert!(!user.validate_csrf("short"));
+        assert!(!user.validate_csrf("this_is_a_very_long_token_that_is_longer_than_expected"));
+    }
+
+    #[test]
+    fn test_auth_flow_state_new_sets_expiry() {
+        let state = AuthFlowState::new(
+            "csrf123".to_string(),
+            "pkce456".to_string(),
+            Some("/return".to_string()),
+        );
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Expiry should be approximately now + 10 minutes (600 seconds)
+        assert!(state.expires_at >= now + 598);
+        assert!(state.expires_at <= now + 602);
+    }
+
+    #[test]
+    fn test_auth_flow_state_is_expired_false_when_fresh() {
+        let state = AuthFlowState::new("csrf123".to_string(), "pkce456".to_string(), None);
+        assert!(!state.is_expired());
+    }
+
+    #[test]
+    fn test_auth_flow_state_is_expired_true_when_past() {
+        let mut state = AuthFlowState::new("csrf123".to_string(), "pkce456".to_string(), None);
+        state.expires_at = 0;
+        assert!(state.is_expired());
+    }
+
+    #[test]
+    fn test_auth_flow_state_validate_state_valid() {
+        let state = AuthFlowState::new("csrf123".to_string(), "pkce456".to_string(), None);
+        assert!(state.validate_state("csrf123"));
+    }
+
+    #[test]
+    fn test_auth_flow_state_validate_state_invalid() {
+        let state = AuthFlowState::new("csrf123".to_string(), "pkce456".to_string(), None);
+        assert!(!state.validate_state("wrong_csrf"));
+    }
+}

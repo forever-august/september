@@ -1,11 +1,15 @@
 {% extends "base.html" %}
 
-{% block title %}{{ config.site_name }} - Authentication Error{% endblock %}
+{% block title %}{{ config.site_name }} - {{ title | default(value="Authentication Error") }}{% endblock %}
 
 {% block content %}
 <div class="error-page">
-    <h1>Authentication Error</h1>
+    <h1>{{ title | default(value="Authentication Error") }}</h1>
     <p>{{ message }}</p>
+    {% if show_login %}
+    <a href="/auth/login">Log in</a>
+    {% else %}
     <a href="/">Return to homepage</a>
+    {% endif %}
 </div>
 {% endblock %}

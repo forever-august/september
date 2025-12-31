@@ -17,7 +17,7 @@ use axum_extra::extract::Host;
 pub fn spawn_redirect_server(http_port: u16, https_port: u16) {
     tokio::spawn(async move {
         let addr = SocketAddr::from(([0, 0, 0, 0], http_port));
-        
+
         tracing::info!(
             http_port = %http_port,
             https_port = %https_port,
@@ -28,10 +28,7 @@ pub fn spawn_redirect_server(http_port: u16, https_port: u16) {
             redirect_to_https(host, uri, https_port)
         }));
 
-        match axum_server::bind(addr)
-            .serve(app.into_make_service())
-            .await
-        {
+        match axum_server::bind(addr).serve(app.into_make_service()).await {
             Ok(()) => {
                 tracing::debug!("HTTP redirect server stopped");
             }
@@ -49,9 +46,18 @@ fn redirect_to_https(host: String, uri: Uri, https_port: u16) -> Result<Redirect
 
     // Build HTTPS URL
     let https_url = if https_port == 443 {
-        format!("https://{}{}", host_without_port, uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/"))
+        format!(
+            "https://{}{}",
+            host_without_port,
+            uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+        )
     } else {
-        format!("https://{}:{}{}", host_without_port, https_port, uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/"))
+        format!(
+            "https://{}:{}{}",
+            host_without_port,
+            https_port,
+            uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+        )
     };
 
     tracing::debug!(from = %uri, to = %https_url, "Redirecting HTTP to HTTPS");

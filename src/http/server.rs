@@ -54,9 +54,7 @@ pub async fn start_server(app: Router, config: &AppConfig) -> Result<(), ServerE
             let key_path = config.http.tls.key_path.as_ref().unwrap();
             start_manual_tls_server(app, addr, cert_path, key_path, &config.http.tls, handle).await
         }
-        TlsMode::Acme => {
-            start_acme_server(app, addr, &config.http.tls, handle).await
-        }
+        TlsMode::Acme => start_acme_server(app, addr, &config.http.tls, handle).await,
     }
 }
 
@@ -98,7 +96,11 @@ async fn start_manual_tls_server(
     shutdown::setup_shutdown_handler(handle.clone());
 
     // Setup SIGHUP handler for certificate reload
-    shutdown::setup_reload_handler(rustls_config.clone(), cert_path.to_string(), key_path.to_string());
+    shutdown::setup_reload_handler(
+        rustls_config.clone(),
+        cert_path.to_string(),
+        key_path.to_string(),
+    );
 
     // Start HTTP->HTTPS redirect if enabled
     if tls_config.redirect_http {
@@ -145,7 +147,10 @@ async fn start_acme_server(
 
     // Create cache directory if it doesn't exist
     std::fs::create_dir_all(&cache_dir).map_err(|e| {
-        ServerError::TlsConfig(format!("Failed to create ACME cache directory '{}': {}", cache_dir, e))
+        ServerError::TlsConfig(format!(
+            "Failed to create ACME cache directory '{}': {}",
+            cache_dir, e
+        ))
     })?;
 
     // Configure ACME

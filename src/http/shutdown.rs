@@ -43,7 +43,9 @@ pub fn setup_shutdown_handler(handle: Handle) {
 
         // Trigger graceful shutdown
         handle.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
-        tracing::info!("Graceful shutdown initiated, waiting up to 30 seconds for connections to close");
+        tracing::info!(
+            "Graceful shutdown initiated, waiting up to 30 seconds for connections to close"
+        );
     });
 }
 

@@ -185,3 +185,100 @@ pub enum NntpResponse {
     PostResult,
     ArticleExists(bool),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::oneshot;
+
+    #[test]
+    fn test_priority_get_article_is_high() {
+        let (tx, _rx) = oneshot::channel();
+        let req = NntpRequest::GetArticle {
+            message_id: "test@example.com".to_string(),
+            response: tx,
+        };
+        assert_eq!(req.priority(), Priority::High);
+    }
+
+    #[test]
+    fn test_priority_post_article_is_high() {
+        let (tx, _rx) = oneshot::channel();
+        let req = NntpRequest::PostArticle {
+            headers: vec![],
+            body: "test".to_string(),
+            response: tx,
+        };
+        assert_eq!(req.priority(), Priority::High);
+    }
+
+    #[test]
+    fn test_priority_check_article_exists_is_high() {
+        let (tx, _rx) = oneshot::channel();
+        let req = NntpRequest::CheckArticleExists {
+            message_id: "test@example.com".to_string(),
+            response: tx,
+        };
+        assert_eq!(req.priority(), Priority::High);
+    }
+
+    #[test]
+    fn test_priority_get_threads_is_normal() {
+        let (tx, _rx) = oneshot::channel();
+        let req = NntpRequest::GetThreads {
+            group: "test.group".to_string(),
+            count: 25,
+            response: tx,
+        };
+        assert_eq!(req.priority(), Priority::Normal);
+    }
+
+    #[test]
+    fn test_priority_get_groups_is_normal() {
+        let (tx, _rx) = oneshot::channel();
+        let req = NntpRequest::GetGroups { response: tx };
+        assert_eq!(req.priority(), Priority::Normal);
+    }
+
+    #[test]
+    fn test_priority_get_group_stats_is_low() {
+        let (tx, _rx) = oneshot::channel();
+        let req = NntpRequest::GetGroupStats {
+            group: "test.group".to_string(),
+            response: tx,
+        };
+        assert_eq!(req.priority(), Priority::Low);
+    }
+
+    #[test]
+    fn test_priority_get_new_articles_is_low() {
+        let (tx, _rx) = oneshot::channel();
+        let req = NntpRequest::GetNewArticles {
+            group: "test.group".to_string(),
+            since_article_number: 100,
+            response: tx,
+        };
+        assert_eq!(req.priority(), Priority::Low);
+    }
+
+    #[test]
+    fn test_priority_display() {
+        assert_eq!(format!("{}", Priority::High), "high");
+        assert_eq!(format!("{}", Priority::Normal), "normal");
+        assert_eq!(format!("{}", Priority::Low), "low");
+    }
+
+    #[test]
+    fn test_priority_ordering() {
+        // High < Normal < Low in the Ord implementation (smaller = higher priority)
+        assert!(Priority::High < Priority::Normal);
+        assert!(Priority::Normal < Priority::Low);
+        assert!(Priority::High < Priority::Low);
+    }
+
+    #[test]
+    fn test_nntp_error_display() {
+        let err = NntpError("connection failed".to_string());
+        assert_eq!(format!("{}", err), "connection failed");
+    }
+}

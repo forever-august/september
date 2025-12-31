@@ -5,18 +5,21 @@
 //! - Session extraction and refresh (sliding window)
 //! - RequireAuthWithEmail extractor for posting routes
 
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
 use axum::{
     extract::{FromRequestParts, Request, State},
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
 };
 use axum_extra::extract::cookie::{Cookie, PrivateCookieJar, SameSite};
 use http::{header::SET_COOKIE, request::Parts, StatusCode};
+use tera::Tera;
 use time::Duration as TimeDuration;
 
+use crate::config::UiConfig;
 use crate::oidc::session::{cookie_names, User};
 use crate::state::AppState;
 use tracing::Instrument;
@@ -54,76 +57,86 @@ pub struct RequireAuthWithEmail {
 
 /// Error type for authentication failures
 #[derive(Debug)]
-pub enum AuthError {
+pub enum AuthErrorKind {
     /// User is not authenticated
     NotAuthenticated,
     /// User is authenticated but missing required email
     MissingEmail,
 }
 
+/// Authentication error with template rendering context
+pub struct AuthError {
+    kind: AuthErrorKind,
+    tera: Arc<Tera>,
+    config: Arc<UiConfig>,
+}
+
+impl std::fmt::Debug for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthError")
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
+impl AuthError {
+    fn new(kind: AuthErrorKind, tera: Arc<Tera>, config: Arc<UiConfig>) -> Self {
+        Self { kind, tera, config }
+    }
+}
+
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
-        match self {
-            AuthError::NotAuthenticated => {
-                // Return 401 with a message suggesting login
-                let body = r#"<!DOCTYPE html>
+        let (status, title, message, show_login) = match self.kind {
+            AuthErrorKind::NotAuthenticated => (
+                StatusCode::UNAUTHORIZED,
+                "Authentication Required",
+                "You must be logged in to access this page.",
+                true,
+            ),
+            AuthErrorKind::MissingEmail => (
+                StatusCode::FORBIDDEN,
+                "Email Required",
+                "Your account does not have an email address, which is required for posting.",
+                false,
+            ),
+        };
+
+        let mut context = tera::Context::new();
+        context.insert("config", self.config.as_ref());
+        context.insert("title", title);
+        context.insert("message", message);
+        context.insert("show_login", &show_login);
+
+        match self.tera.render("auth/error.html", &context) {
+            Ok(html) => (status, Html(html)).into_response(),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to render auth error template");
+                // Fallback to simple HTML if template rendering fails
+                let body = format!(
+                    r#"<!DOCTYPE html>
 <html>
-<head>
-    <title>Authentication Required</title>
-    <link rel="stylesheet" href="/static/css/style.css">
-</head>
-<body>
-    <header class="site-header">
-        <nav class="main-nav">
-            <a href="/" class="nav-home">Home</a>
-        </nav>
-    </header>
-    <main class="container">
-        <div class="error-page">
-            <h1>Authentication Required</h1>
-            <p>You must be logged in to access this page.</p>
-            <a href="/auth/login">Log in</a>
-        </div>
-    </main>
-</body>
-</html>"#;
-                (StatusCode::UNAUTHORIZED, axum::response::Html(body)).into_response()
-            }
-            AuthError::MissingEmail => {
-                let body = r#"<!DOCTYPE html>
-<html>
-<head>
-    <title>Email Required</title>
-    <link rel="stylesheet" href="/static/css/style.css">
-</head>
-<body>
-    <header class="site-header">
-        <nav class="main-nav">
-            <a href="/" class="nav-home">Home</a>
-        </nav>
-    </header>
-    <main class="container">
-        <div class="error-page">
-            <h1>Email Required</h1>
-            <p>Your account does not have an email address, which is required for posting.</p>
-            <a href="/">Return to homepage</a>
-        </div>
-    </main>
-</body>
-</html>"#;
-                (StatusCode::FORBIDDEN, axum::response::Html(body)).into_response()
+<head><title>{}</title><link rel="stylesheet" href="/static/css/style.css"></head>
+<body><main class="container"><div class="error-page"><h1>{}</h1><p>{}</p><a href="/">Return to homepage</a></div></main></body>
+</html>"#,
+                    title, title, message
+                );
+                (status, Html(body)).into_response()
             }
         }
     }
 }
 
-impl<S> FromRequestParts<S> for RequireAuthWithEmail
-where
-    S: Send + Sync,
-{
+impl FromRequestParts<AppState> for RequireAuthWithEmail {
     type Rejection = AuthError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let tera = state.tera.clone();
+        let config = Arc::new(state.config.ui.clone());
+
         let current_user = parts
             .extensions
             .get::<CurrentUser>()
@@ -132,10 +145,16 @@ where
 
         match current_user.0 {
             Some(user) if !user.is_expired() => {
-                let email = user.email.clone().ok_or(AuthError::MissingEmail)?;
+                let email = user.email.clone().ok_or_else(|| {
+                    AuthError::new(AuthErrorKind::MissingEmail, tera.clone(), config.clone())
+                })?;
                 Ok(RequireAuthWithEmail { user, email })
             }
-            _ => Err(AuthError::NotAuthenticated),
+            _ => Err(AuthError::new(
+                AuthErrorKind::NotAuthenticated,
+                tera,
+                config,
+            )),
         }
     }
 }
