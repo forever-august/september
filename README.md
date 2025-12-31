@@ -8,12 +8,14 @@ A Rust web application that provides a modern web interface to NNTP (Usenet/news
 - Worker pool for concurrent NNTP connections
 - Request coalescing to prevent duplicate requests
 - Multi-tier caching for articles, threads, and groups
-- TLS support with opportunistic fallback
+- TLS support with ACME (Let's Encrypt) or manual certificates
 - Hierarchical newsgroup browsing
 - Threaded article view with pagination
 - Post and reply support (requires authentication)
 - OpenID Connect (OIDC) authentication with multiple providers
 - CDN-friendly Cache-Control headers
+- Health check endpoint for container orchestration
+- Graceful shutdown with connection draining
 
 ## Quickstart
 
@@ -31,7 +33,7 @@ cd september
 # Build
 cargo build --release
 
-# Run (uses config/default.toml by default)
+# Run (uses dist/config/default.toml by default)
 cargo run --release
 
 # Or run the binary directly
@@ -46,8 +48,9 @@ Access the web interface at http://127.0.0.1:3000
 Usage: september [OPTIONS]
 
 Options:
-  -c, --config <CONFIG>        Path to configuration file [default: config/default.toml]
+  -c, --config <CONFIG>        Path to configuration file [default: dist/config/default.toml]
   -l, --log-level <LOG_LEVEL>  Log level filter (e.g., "september=debug,tower_http=info")
+  --log-format <FORMAT>        Log format: "text" (default) or "json"
   -h, --help                   Print help
   -V, --version                Print version
 ```
@@ -69,9 +72,37 @@ Log level priority: CLI (`-l`) > `RUST_LOG` environment variable > default (`sep
 
 ## Configuration
 
-Configuration uses TOML format. See `config/default.toml` for available options.
+Configuration uses TOML format. See `dist/config/default.toml` for available options.
 
 The default configuration connects to `nntp.lore.kernel.org` (Linux kernel mailing list archives).
+
+## Operations
+
+### Health Check
+
+September exposes a health check endpoint for container orchestration:
+
+```
+GET /health → 200 OK, body: "ok"
+```
+
+Use this for Kubernetes liveness probes, ECS health checks, or load balancer health checks.
+
+### Signals
+
+| Signal | Behavior |
+|--------|----------|
+| `SIGTERM` / `SIGINT` | Graceful shutdown with 30-second connection drain |
+| `SIGHUP` | Reload TLS certificates (manual TLS mode only) |
+
+### Logging
+
+September supports two log formats:
+
+- `text` (default): Human-readable format for development
+- `json`: Structured JSON format for production log aggregation
+
+Set via `--log-format json` or `[logging] format = "json"` in config.
 
 ## Documentation
 

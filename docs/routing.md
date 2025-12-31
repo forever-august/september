@@ -19,6 +19,7 @@ September uses [Axum](https://github.com/tokio-rs/axum) for HTTP routing with pe
 | `/auth/callback/{provider}` | `auth::callback` | OAuth2 callback handler |
 | `/auth/logout` | `auth::logout` | Clear session (POST) |
 | `/privacy` | `privacy::privacy` | Privacy policy page |
+| `/health` | `health::health` | Health check for liveness probes |
 | `/static/*` | `ServeDir` | Static assets (CSS, JS) |
 
 ## Request Flow
@@ -43,6 +44,7 @@ flowchart TD
 - Post handlers: `src/routes/post.rs` (`compose`, `submit`, `reply`)
 - Auth handlers: `src/routes/auth.rs` (`login`, `login_provider`, `callback`, `logout`)
 - Privacy handler: `src/routes/privacy.rs` (`privacy`)
+- Health handler: `src/routes/health.rs` (`health`)
 - Cache constants: `src/config.rs`
 
 ## Cache Strategy
@@ -59,6 +61,7 @@ All Cache-Control headers include `stale-while-revalidate` (SWR) and `stale-if-e
 | Static files | 1 day | — | Immutable flag; fingerprint URLs for cache busting |
 | Auth routes | — | — | No caching (stateful session operations) |
 | Post routes | — | — | No caching (stateful form submissions) |
+| Health | — | — | No caching (must always be fresh for probes) |
 | Errors | 5s | — | Short TTL prevents thundering herd while allowing recovery |
 
 All non-static responses include `stale-if-error=300` (5 minutes) to serve stale content during backend failures.

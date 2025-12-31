@@ -131,6 +131,7 @@ Priority is determined by `NntpRequest::priority()` in `src/nntp/messages.rs`. S
 | Post routes | `src/routes/post.rs` (`compose`, `submit`, `reply`) | New post and reply handlers |
 | Auth routes | `src/routes/auth.rs` (`login`, `callback`, `logout`) | OIDC authentication flow handlers |
 | Privacy routes | `src/routes/privacy.rs` (`privacy`) | Privacy policy page |
+| Health routes | `src/routes/health.rs` (`health`) | Health check endpoint for liveness probes |
 | OIDC module | `src/oidc/mod.rs` | OpenID Connect client and provider management |
 | Session handling | `src/oidc/session.rs` | User session data, CSRF tokens, cookie management |
 
