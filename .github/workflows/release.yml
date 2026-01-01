@@ -9,18 +9,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            cross: false
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            cross: true
+  build-x86_64:
+    name: Build x86_64 packages
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
@@ -28,43 +19,106 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
-      - name: Install cross
-        if: matrix.cross
-        uses: taiki-e/install-action@cross
+      - name: Install packaging tools
+        run: cargo install cargo-deb cargo-generate-rpm
 
-      - name: Build release binary (native)
-        if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release
 
-      - name: Build release binary (cross)
-        if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }}
+      - name: Prepare manpage for RPM
+        run: gzip -k -f dist/september.1
 
-      - name: Create artifact directory
-        run: mkdir -p dist
+      - name: Build deb package
+        run: cargo deb --no-build
 
-      - name: Package binary
+      - name: Build rpm package
+        run: cargo generate-rpm
+
+      - name: Create tarball
         run: |
-          cp target/${{ matrix.target }}/release/september dist/
-          cp dist/config/default.toml dist/
-          cp -r dist/themes dist/themes-dist
-          mv dist/themes-dist dist/themes
-          cd dist
-          tar -czvf september-${{ matrix.target }}.tar.gz september default.toml themes
-          rm -rf september default.toml themes
+          VERSION="${GITHUB_REF_NAME}"
+          ARCHIVE_NAME="september-${VERSION}-x86_64-unknown-linux-gnu"
+          mkdir -p "pkg/${ARCHIVE_NAME}"
+          cp target/release/september "pkg/${ARCHIVE_NAME}/"
+          cp dist/september.toml "pkg/${ARCHIVE_NAME}/"
+          cp -r dist/themes "pkg/${ARCHIVE_NAME}/"
+          cp dist/september.1 "pkg/${ARCHIVE_NAME}/"
+          cp dist/september.service "pkg/${ARCHIVE_NAME}/"
+          cp LICENSE README.md "pkg/${ARCHIVE_NAME}/"
+          cd pkg && tar -czvf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
 
-      - name: Upload artifact
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          cp target/debian/*.deb artifacts/
+          cp target/generate-rpm/*.rpm artifacts/
+          cp pkg/*.tar.gz artifacts/
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: september-${{ matrix.target }}
-          path: dist/september-${{ matrix.target }}.tar.gz
+          name: packages-x86_64
+          path: artifacts/*
+
+  build-aarch64:
+    name: Build aarch64 packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build aarch64 packages in container
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            -e GITHUB_REF_NAME="${GITHUB_REF_NAME}" \
+            rust:latest \
+            bash -c '
+              set -ex
+              apt-get update && apt-get install -y pkg-config libssl-dev cmake clang
+              cargo install cargo-deb cargo-generate-rpm
+              cargo build --release
+              gzip -k -f dist/september.1
+              cargo deb --no-build
+              cargo generate-rpm
+
+              VERSION="${GITHUB_REF_NAME}"
+              ARCHIVE_NAME="september-${VERSION}-aarch64-unknown-linux-gnu"
+              mkdir -p "pkg/${ARCHIVE_NAME}"
+              cp target/release/september "pkg/${ARCHIVE_NAME}/"
+              cp dist/september.toml "pkg/${ARCHIVE_NAME}/"
+              cp -r dist/themes "pkg/${ARCHIVE_NAME}/"
+              cp dist/september.1 "pkg/${ARCHIVE_NAME}/"
+              cp dist/september.service "pkg/${ARCHIVE_NAME}/"
+              cp LICENSE README.md "pkg/${ARCHIVE_NAME}/"
+              cd pkg && tar -czvf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+            '
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          cp target/debian/*.deb artifacts/ || true
+          cp target/generate-rpm/*.rpm artifacts/ || true
+          cp pkg/*.tar.gz artifacts/ || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-aarch64
+          path: artifacts/*
 
   release:
     name: Create Release
-    needs: build
+    needs: [build-x86_64, build-aarch64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -81,7 +135,7 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          find artifacts -name '*.tar.gz' -exec mv {} release/ \;
+          find artifacts -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.tar.gz' \) -exec mv {} release/ \;
           ls -la release/
 
       - name: Create GitHub Release

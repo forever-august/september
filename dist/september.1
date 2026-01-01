@@ -1,0 +1,365 @@
+.TH SEPTEMBER 1 "December 2024" "september 0.1.0" "User Commands"
+.SH NAME
+september \- a web interface to NNTP servers
+.SH SYNOPSIS
+.B september
+.RB [ \-c
+.IR config ]
+.RB [ \-l
+.IR log-level ]
+.RB [ \-\-log\-format
+.IR format ]
+.br
+.B september
+.B \-h
+|
+.B \-\-help
+.br
+.B september
+.B \-V
+|
+.B \-\-version
+.SH DESCRIPTION
+.B september
+is a Rust web application that provides a modern web interface to NNTP
+(Usenet/newsgroup) servers. It is built with Axum and Tera templates.
+.PP
+Key features include:
+.IP \(bu 2
+Federated multi-server architecture with automatic failover
+.IP \(bu
+Worker pool for concurrent NNTP connections
+.IP \(bu
+Request coalescing to prevent duplicate requests
+.IP \(bu
+Multi-tier caching for articles, threads, and groups
+.IP \(bu
+TLS support with opportunistic fallback
+.IP \(bu
+Hierarchical newsgroup browsing
+.IP \(bu
+Threaded article view with pagination
+.IP \(bu
+Post and reply support (requires authentication)
+.IP \(bu
+OpenID Connect (OIDC) authentication with multiple providers
+.IP \(bu
+CDN-friendly Cache-Control headers
+.SH OPTIONS
+.TP
+.BR \-c ", " \-\-config " " \fIpath\fR
+Path to the configuration file. Default:
+.IR /etc/september.toml
+(release) or
+.IR dist/september.toml
+(debug).
+.TP
+.BR \-l ", " \-\-log\-level " " \fIfilter\fR
+Log level filter using the tracing-subscriber format. Examples:
+.RS
+.IP \(bu 2
+.B september=debug,tower_http=info
+.IP \(bu
+.B september=warn
+.IP \(bu
+.B info
+.RE
+.IP
+Log level priority: CLI option > \fBRUST_LOG\fR environment variable > default
+(\fBseptember=debug,tower_http=debug\fR).
+.TP
+.BR \-\-log\-format " " \fIformat\fR
+Log output format. Valid values:
+.RS
+.IP \fBtext\fR
+Human-readable format (default).
+.IP \fBjson\fR
+Structured JSON format for production log aggregation.
+.RE
+.TP
+.BR \-h ", " \-\-help
+Print help information and exit.
+.TP
+.BR \-V ", " \-\-version
+Print version information and exit.
+.SH CONFIGURATION
+Configuration uses TOML format. The configuration file contains the following
+sections:
+.SS HTTP Server Configuration
+.PP
+The \fB[http]\fR section configures the web server:
+.TP
+.B host
+IP address to bind to (default: 127.0.0.1).
+.TP
+.B port
+Port number to listen on (default: 3000).
+.SS TLS Configuration
+.PP
+The \fB[http.tls]\fR section configures HTTPS. Three modes are available:
+.TP
+.B mode = "acme"
+Automatic certificate provisioning via Let's Encrypt (default). Requires
+\fBacme_domains\fR and \fBacme_email\fR to be set.
+.TP
+.B mode = "manual"
+User-provided certificate and key files. Requires \fBcert_path\fR and
+\fBkey_path\fR. Send SIGHUP to reload certificates without restart.
+.TP
+.B mode = "none"
+Plain HTTP (explicit opt-out, for development or behind a reverse proxy).
+.PP
+ACME mode options:
+.RS
+.TP
+.B acme_domains
+List of domain names for the certificate.
+.TP
+.B acme_email
+Contact email for Let's Encrypt notifications.
+.TP
+.B acme_production
+Use production Let's Encrypt (default: false, uses staging).
+.TP
+.B acme_cache_dir
+Directory to store certificates (default: ./acme-cache).
+.RE
+.PP
+Manual mode options:
+.RS
+.TP
+.B cert_path
+Path to PEM-encoded certificate file.
+.TP
+.B key_path
+Path to PEM-encoded private key file.
+.RE
+.PP
+HTTP redirect options (when TLS enabled):
+.RS
+.TP
+.B redirect_http
+Enable HTTP to HTTPS redirect (default: true).
+.TP
+.B redirect_port
+Port for HTTP redirect listener (default: 80).
+.RE
+.SS NNTP Settings
+.PP
+The \fB[nntp]\fR section configures global NNTP settings:
+.TP
+.B timeout_seconds
+Connection timeout in seconds (default: 30).
+.TP
+.B request_timeout_seconds
+Request timeout in seconds (default: 30).
+.PP
+The \fB[nntp.defaults]\fR subsection sets display defaults:
+.TP
+.B threads_per_page
+Number of threads per page (default: 25).
+.TP
+.B articles_per_page
+Number of articles per page in thread view (default: 20).
+.TP
+.B max_articles_per_group
+Maximum articles to fetch per group (default: 500).
+.SS NNTP Servers
+.PP
+One or more \fB[[server]]\fR sections define the NNTP server pool. Servers
+are tried in order for failover.
+.TP
+.B name
+Server identifier (used in logging and UI).
+.TP
+.B host
+NNTP server hostname.
+.TP
+.B port
+NNTP server port.
+.TP
+.B worker_count
+Number of worker connections (default: 4).
+.TP
+.B timeout_seconds
+Server-specific connection timeout (overrides global).
+.TP
+.B request_timeout_seconds
+Server-specific request timeout (overrides global).
+.TP
+.B username
+Username for NNTP authentication.
+.TP
+.B password
+Password for NNTP authentication.
+.TP
+.B allow_insecure_auth
+Allow authentication over plaintext (default: false). DANGEROUS: only for testing.
+.SS UI Configuration
+.PP
+The \fB[ui]\fR section configures the user interface:
+.TP
+.B site_name
+Site title shown in header. Defaults to first server name.
+.TP
+.B collapse_threshold
+Number of replies before collapsing in thread view.
+.SS Cache Configuration
+.PP
+The \fB[cache]\fR section configures in-memory caching:
+.TP
+.B article_ttl_seconds
+TTL for cached articles (default: 3600).
+.TP
+.B threads_ttl_seconds
+TTL for cached thread lists (default: 300).
+.TP
+.B groups_ttl_seconds
+TTL for cached group list (default: 3600).
+.TP
+.B max_articles
+Maximum number of cached articles (default: 10000).
+.TP
+.B max_thread_lists
+Maximum number of cached thread lists (default: 100).
+.TP
+.B max_group_stats
+Maximum number of cached group stats (default: 1000).
+.SS Logging Configuration
+.PP
+The \fB[logging]\fR section configures log output:
+.TP
+.B format
+Log format: "text" (human-readable) or "json" (structured).
+.SS Theme Configuration
+.PP
+The \fB[theme]\fR section configures templates and static assets:
+.TP
+.B name
+Active theme name (default: "default").
+.TP
+.B themes_dir
+Base directory containing themes. Production: /usr/share/september/themes.
+Development: dist/themes.
+.SS OIDC Authentication
+.PP
+The optional \fB[oidc]\fR section enables OpenID Connect authentication:
+.TP
+.B cookie_secret
+Secret for signing session cookies. Supports \fBenv:VAR_NAME\fR,
+\fBfile:/path\fR, or literal value (64+ chars recommended).
+.TP
+.B session_lifetime_days
+Session lifetime in days (default: 30).
+.TP
+.B redirect_uri_base
+Override for redirect URI base URL. Auto-detected from Host header if not set.
+.PP
+One or more \fB[[oidc.provider]]\fR sections define authentication providers:
+.TP
+.B name
+URL-safe identifier (e.g., "google", "github").
+.TP
+.B display_name
+Human-readable name shown on login page.
+.TP
+.B issuer_url
+OIDC issuer URL for automatic endpoint discovery.
+.TP
+.B auth_url\fR, \fBtoken_url\fR, \fBuserinfo_url
+Manual endpoint URLs (for OAuth2-only providers like GitHub).
+.TP
+.B client_id
+OAuth2 client ID.
+.TP
+.B client_secret
+OAuth2 client secret. Supports \fBenv:VAR_NAME\fR, \fBfile:/path\fR,
+or literal value.
+.TP
+.B userinfo_sub_field
+Field name for subject ID in userinfo response (default: "sub").
+GitHub uses "id".
+.SH SIGNALS
+.TP
+.B SIGHUP
+When using manual TLS mode, reload certificate and key files without restart.
+.TP
+.B SIGTERM\fR, \fBSIGINT
+Graceful shutdown.
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Log level filter (overridden by \fB\-l\fR option).
+.SH FILES
+.TP
+.I dist/september.toml
+Default configuration file location (development/debug builds).
+.TP
+.I /etc/september.toml
+Default configuration file location (release builds).
+.TP
+.I /usr/share/september/themes/
+Recommended production themes directory.
+.TP
+.I ./acme-cache/
+Default ACME certificate cache directory.
+.SH EXAMPLES
+Start with default configuration:
+.PP
+.RS
+.nf
+september
+.fi
+.RE
+.PP
+Use a custom configuration file:
+.PP
+.RS
+.nf
+september -c /etc/september.toml
+.fi
+.RE
+.PP
+Set log level to info and use JSON logging:
+.PP
+.RS
+.nf
+september -l "september=info,tower_http=warn" --log-format json
+.fi
+.RE
+.PP
+Combine options:
+.PP
+.RS
+.nf
+september --config prod.toml --log-level september=warn
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+Successful termination.
+.TP
+.B 1
+Error during startup (configuration error, bind failure, etc.).
+.SH SEE ALSO
+.BR nntp (7),
+.BR toml (5)
+.PP
+Project documentation:
+.IP \(bu 2
+Architecture: docs/architecture.md
+.IP \(bu
+NNTP service design: docs/nntp-service.md
+.IP \(bu
+HTTP routing and caching: docs/routing.md
+.IP \(bu
+OIDC authentication: docs/oidc.md
+.IP \(bu
+Background refresh: docs/background-refresh.md
+.SH AUTHORS
+September was written by the September contributors.
+.SH LICENSE
+Apache License 2.0
+.SH BUGS
+Report bugs at: https://github.com/your-org/september/issues

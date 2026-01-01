@@ -39,20 +39,21 @@ mode = "none"
 [nntp]
 timeout_seconds = 30
 request_timeout_seconds = 30
-
-[nntp.defaults]
 threads_per_page = 25
 articles_per_page = 20
+# max_articles_per_group = 500  # Maximum articles fetched per group
 
 # NNTP servers (federated pool - tried in order)
-#[[server]]
-#name = "olduse"
-#host = "olduse.net"
-#port = 11940
-#worker_count = 4
+# [[server]]
+# name = "olduse"
+# host = "olduse.net"
+# port = 11940
+# worker_count = 4
+# timeout_seconds = 30           # Override global connection timeout
+# request_timeout_seconds = 30   # Override global request timeout
 # Optional authentication (requires TLS unless allow_insecure_auth = true)
-#username = "myuser"
-#password = "mypassword"
+# username = "myuser"
+# password = "mypassword"
 # allow_insecure_auth = false  # DANGER: allows plaintext auth (testing only)
 
 # Uncomment to add additional servers for fallback
@@ -64,6 +65,7 @@ worker_count = 2
 
 [ui]
 # site_name defaults to the first server name if not set
+site_name = "September NNTP Gateway"
 collapse_threshold = 5
 
 [cache]
@@ -72,17 +74,47 @@ threads_ttl_seconds = 300      # 5 minutes
 groups_ttl_seconds = 3600      # 1 hour
 max_articles = 10000
 max_thread_lists = 100
+# max_group_stats = 1000         # Maximum cached group stats entries
 
 # Logging configuration
 [logging]
 # Log format: "text" (human-readable, default) or "json" (structured for production)
-format = "text"
+format = "json"
 
 # Theme configuration
 [theme]
 # Active theme name (default: "default")
 name = "default"
 # Base directory containing themes
-# Production: "/etc/september/themes" (default)
+# Production: "/usr/share/september/themes" (default)
 # Development: "dist/themes"
 themes_dir = "dist/themes"
+
+# OpenID Connect authentication (optional)
+# Enables login via OAuth2/OIDC providers (Google, GitHub, etc.)
+#
+# [oidc]
+# cookie_secret = "your-secret-here-64-chars-minimum-recommended"
+#                                    # Secret for signing session cookies (64+ chars)
+#                                    # Supports: env:VAR_NAME, file:/path, or literal
+# session_lifetime_days = 30         # Session duration (default: 30)
+# redirect_uri_base = "https://example.com"  # Optional: override auto-detected base URL
+#
+# --- OIDC Discovery mode (recommended for Google, Microsoft, etc.) ---
+# [[oidc.provider]]
+# name = "google"                    # URL-safe identifier (used in /auth/login/google)
+# display_name = "Google"            # Shown on login page
+# issuer_url = "https://accounts.google.com"
+# client_id = "your-client-id"
+# client_secret = "env:GOOGLE_CLIENT_SECRET"  # Supports env:/file:/literal
+#
+# --- Manual OAuth2 mode (for GitHub, etc. that don't support OIDC discovery) ---
+# [[oidc.provider]]
+# name = "github"
+# display_name = "GitHub"
+# auth_url = "https://github.com/login/oauth/authorize"
+# token_url = "https://github.com/login/oauth/access_token"
+# userinfo_url = "https://api.github.com/user"
+# userinfo_sub_field = "id"          # GitHub uses "id" instead of "sub" (default: "sub")
+# client_id = "your-client-id"
+# client_secret = "env:GITHUB_CLIENT_SECRET"

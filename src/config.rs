@@ -200,8 +200,12 @@ pub const POST_POLL_INTERVAL_MS: u64 = 10;
 // Default Paths and Strings
 // =============================================================================
 
-/// Default configuration file path
-pub const DEFAULT_CONFIG_PATH: &str = "dist/config/default.toml";
+/// Default configuration file path (debug builds use local path, release uses system path)
+#[cfg(debug_assertions)]
+pub const DEFAULT_CONFIG_PATH: &str = "dist/september.toml";
+
+#[cfg(not(debug_assertions))]
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/september.toml";
 
 /// Default subject for articles without a subject
 pub const DEFAULT_SUBJECT: &str = "(no subject)";
@@ -623,7 +627,7 @@ impl ThemeConfig {
     }
 
     fn default_themes_dir() -> String {
-        "/etc/september/themes".to_string()
+        "/usr/share/september/themes".to_string()
     }
 
     /// Get path to templates for a specific theme.

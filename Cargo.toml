@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "A web interface to NNTP servers"
 license = "Apache-2.0"
+homepage = "https://github.com/forever-august/september"
+repository = "https://github.com/forever-august/september"
 
 [dependencies]
 # Web framework
@@ -69,4 +71,64 @@ serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3.24.0"
+
+[package.metadata.deb]
+maintainer = "PLACEHOLDER <placeholder@example.com>"
+copyright = "2024 September Contributors"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+September is a web interface to NNTP (Usenet/newsgroup) servers. \
+Features include federated multi-server architecture, automatic TLS, \
+threaded article views, and OpenID Connect authentication."""
+depends = "$auto, ca-certificates"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/september", "usr/bin/", "755"],
+    ["dist/september.toml", "etc/september.toml", "644"],
+    ["dist/themes/default/static/css/style.css", "usr/share/september/themes/default/static/css/style.css", "644"],
+    ["dist/themes/default/static/js/app.js", "usr/share/september/themes/default/static/js/app.js", "644"],
+    ["dist/themes/default/templates/base.html", "usr/share/september/themes/default/templates/base.html", "644"],
+    ["dist/themes/default/templates/home.html", "usr/share/september/themes/default/templates/home.html", "644"],
+    ["dist/themes/default/templates/compose.html", "usr/share/september/themes/default/templates/compose.html", "644"],
+    ["dist/themes/default/templates/privacy.html", "usr/share/september/themes/default/templates/privacy.html", "644"],
+    ["dist/themes/default/templates/article/view.html", "usr/share/september/themes/default/templates/article/view.html", "644"],
+    ["dist/themes/default/templates/auth/error.html", "usr/share/september/themes/default/templates/auth/error.html", "644"],
+    ["dist/themes/default/templates/auth/login.html", "usr/share/september/themes/default/templates/auth/login.html", "644"],
+    ["dist/themes/default/templates/partials/footer.html", "usr/share/september/themes/default/templates/partials/footer.html", "644"],
+    ["dist/themes/default/templates/partials/header.html", "usr/share/september/themes/default/templates/partials/header.html", "644"],
+    ["dist/themes/default/templates/partials/pagination.html", "usr/share/september/themes/default/templates/partials/pagination.html", "644"],
+    ["dist/themes/default/templates/threads/list.html", "usr/share/september/themes/default/templates/threads/list.html", "644"],
+    ["dist/themes/default/templates/threads/view.html", "usr/share/september/themes/default/templates/threads/view.html", "644"],
+    ["dist/september.1", "usr/share/man/man1/september.1", "644"],
+    ["dist/september.service", "lib/systemd/system/september.service", "644"],
+]
+conf-files = ["/etc/september.toml"]
+maintainer-scripts = "dist/debian/"
+systemd-units = { enable = false }
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/september", dest = "/usr/bin/september", mode = "0755" },
+    { source = "dist/september.toml", dest = "/etc/september.toml", mode = "0644", config = "noreplace" },
+    { source = "dist/themes/default/static/css/style.css", dest = "/usr/share/september/themes/default/static/css/style.css", mode = "0644" },
+    { source = "dist/themes/default/static/js/app.js", dest = "/usr/share/september/themes/default/static/js/app.js", mode = "0644" },
+    { source = "dist/themes/default/templates/base.html", dest = "/usr/share/september/themes/default/templates/base.html", mode = "0644" },
+    { source = "dist/themes/default/templates/home.html", dest = "/usr/share/september/themes/default/templates/home.html", mode = "0644" },
+    { source = "dist/themes/default/templates/compose.html", dest = "/usr/share/september/themes/default/templates/compose.html", mode = "0644" },
+    { source = "dist/themes/default/templates/privacy.html", dest = "/usr/share/september/themes/default/templates/privacy.html", mode = "0644" },
+    { source = "dist/themes/default/templates/article/view.html", dest = "/usr/share/september/themes/default/templates/article/view.html", mode = "0644" },
+    { source = "dist/themes/default/templates/auth/error.html", dest = "/usr/share/september/themes/default/templates/auth/error.html", mode = "0644" },
+    { source = "dist/themes/default/templates/auth/login.html", dest = "/usr/share/september/themes/default/templates/auth/login.html", mode = "0644" },
+    { source = "dist/themes/default/templates/partials/footer.html", dest = "/usr/share/september/themes/default/templates/partials/footer.html", mode = "0644" },
+    { source = "dist/themes/default/templates/partials/header.html", dest = "/usr/share/september/themes/default/templates/partials/header.html", mode = "0644" },
+    { source = "dist/themes/default/templates/partials/pagination.html", dest = "/usr/share/september/themes/default/templates/partials/pagination.html", mode = "0644" },
+    { source = "dist/themes/default/templates/threads/list.html", dest = "/usr/share/september/themes/default/templates/threads/list.html", mode = "0644" },
+    { source = "dist/themes/default/templates/threads/view.html", dest = "/usr/share/september/themes/default/templates/threads/view.html", mode = "0644" },
+    { source = "dist/september.1.gz", dest = "/usr/share/man/man1/september.1.gz", mode = "0644", doc = true },
+    { source = "dist/september.service", dest = "/lib/systemd/system/september.service", mode = "0644" },
+]
+
+[package.metadata.generate-rpm.requires]
+ca-certificates = "*"
 

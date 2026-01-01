@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+# Compress man page if not already compressed
+if [ -f /usr/share/man/man1/september.1 ] && [ ! -f /usr/share/man/man1/september.1.gz ]; then
+    gzip -9 /usr/share/man/man1/september.1
+fi
+
+#DEBHELPER#

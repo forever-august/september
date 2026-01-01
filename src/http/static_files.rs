@@ -38,7 +38,7 @@ mod tests {
     fn test_create_static_service_default_theme() {
         let theme = ThemeConfig {
             name: "default".to_string(),
-            themes_dir: "/etc/september/themes".to_string(),
+            themes_dir: "/usr/share/september/themes".to_string(),
         };
         // Just verify it doesn't panic - actual file serving tested in integration
         let _service = create_static_service(&theme);
@@ -48,7 +48,7 @@ mod tests {
     fn test_create_static_service_custom_theme() {
         let theme = ThemeConfig {
             name: "dark".to_string(),
-            themes_dir: "/etc/september/themes".to_string(),
+            themes_dir: "/usr/share/september/themes".to_string(),
         };
         let _service = create_static_service(&theme);
     }
