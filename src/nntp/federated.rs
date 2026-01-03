@@ -1968,3 +1968,189 @@ impl NntpFederatedService {
             .unwrap_or_else(|| AppError::Internal("Failed to post article".into())))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        ACTIVITY_HIGH_RPS, ACTIVITY_WINDOW_SECS, BACKGROUND_REFRESH_MAX_PERIOD_SECS,
+        BACKGROUND_REFRESH_MIN_PERIOD_SECS,
+    };
+
+    // =============================================================================
+    // calculate_refresh_period tests
+    // =============================================================================
+
+    #[test]
+    fn test_calculate_refresh_period_high_activity() {
+        // At 10,000 requests/second, should return ~1 second
+        let period = NntpFederatedService::calculate_refresh_period(ACTIVITY_HIGH_RPS);
+        assert!(
+            period.as_secs_f64() <= BACKGROUND_REFRESH_MIN_PERIOD_SECS as f64 + 0.5,
+            "High activity ({} rps) should give ~{}s refresh, got {:?}",
+            ACTIVITY_HIGH_RPS,
+            BACKGROUND_REFRESH_MIN_PERIOD_SECS,
+            period
+        );
+    }
+
+    #[test]
+    fn test_calculate_refresh_period_low_activity() {
+        // Minimal activity (1 request in 5 minutes = 1/300 rps) should return ~30 seconds
+        let min_rps = 1.0 / ACTIVITY_WINDOW_SECS as f64;
+        let period = NntpFederatedService::calculate_refresh_period(min_rps);
+        assert!(
+            period.as_secs_f64() >= BACKGROUND_REFRESH_MAX_PERIOD_SECS as f64 - 1.0,
+            "Low activity ({:.4} rps) should give ~{}s refresh, got {:?}",
+            min_rps,
+            BACKGROUND_REFRESH_MAX_PERIOD_SECS,
+            period
+        );
+    }
+
+    #[test]
+    fn test_calculate_refresh_period_log_scale() {
+        // At 100 rps, should return value between 1s and 30s using log10 interpolation
+        let period = NntpFederatedService::calculate_refresh_period(100.0);
+        let period_secs = period.as_secs_f64();
+
+        assert!(
+            period_secs > BACKGROUND_REFRESH_MIN_PERIOD_SECS as f64,
+            "100 rps should give period > {}s, got {}s",
+            BACKGROUND_REFRESH_MIN_PERIOD_SECS,
+            period_secs
+        );
+        assert!(
+            period_secs < BACKGROUND_REFRESH_MAX_PERIOD_SECS as f64,
+            "100 rps should give period < {}s, got {}s",
+            BACKGROUND_REFRESH_MAX_PERIOD_SECS,
+            period_secs
+        );
+
+        // Verify logarithmic behavior: 100 rps is closer to 10000 in log scale
+        // log10(100) = 2, log10(10000) = 4, log10(1/300) ≈ -2.48
+        // So 100 rps should be roughly in the middle-to-lower portion of the range
+        assert!(
+            period_secs < 20.0,
+            "100 rps should be in lower half of range due to log scale, got {}s",
+            period_secs
+        );
+    }
+
+    #[test]
+    fn test_calculate_refresh_period_zero_activity() {
+        // Zero activity should return max period
+        let period = NntpFederatedService::calculate_refresh_period(0.0);
+        assert_eq!(
+            period.as_secs(),
+            BACKGROUND_REFRESH_MAX_PERIOD_SECS,
+            "Zero activity should give max refresh period"
+        );
+    }
+
+    #[test]
+    fn test_calculate_refresh_period_negative_activity() {
+        // Negative (invalid) activity should return max period
+        let period = NntpFederatedService::calculate_refresh_period(-1.0);
+        assert_eq!(
+            period.as_secs(),
+            BACKGROUND_REFRESH_MAX_PERIOD_SECS,
+            "Negative activity should give max refresh period"
+        );
+    }
+
+    // =============================================================================
+    // GroupActivity tests
+    // =============================================================================
+
+    #[test]
+    fn test_group_activity_advance_clears_buckets() {
+        let mut activity = GroupActivity::new();
+
+        // Record some requests at time 0
+        activity.record_request(0);
+        activity.record_request(0);
+        activity.record_request(0);
+        assert_eq!(activity.total_requests, 3);
+
+        // Advance beyond the activity window (300+ seconds)
+        // This should clear all old buckets and reset total
+        activity.advance_to(ACTIVITY_WINDOW_SECS + 10);
+        assert_eq!(
+            activity.total_requests, 0,
+            "Old buckets should be cleared after window elapses"
+        );
+    }
+
+    #[test]
+    fn test_group_activity_partial_advance() {
+        let mut activity = GroupActivity::new();
+
+        // Record requests at time 0
+        activity.record_request(0);
+        activity.record_request(0);
+
+        // Advance by half the window
+        let half_window = ACTIVITY_WINDOW_SECS / 2;
+        activity.advance_to(half_window);
+
+        // Record more requests
+        activity.record_request(half_window);
+
+        // Total should include both old and new
+        assert_eq!(
+            activity.total_requests, 3,
+            "Requests within window should be counted"
+        );
+
+        // Advance past the first set of requests but not the second
+        activity.advance_to(ACTIVITY_WINDOW_SECS + 5);
+
+        // Only the newer request should remain
+        assert_eq!(
+            activity.total_requests, 1,
+            "Only recent requests should remain after partial window advance"
+        );
+    }
+
+    #[test]
+    fn test_group_activity_requests_per_second() {
+        let mut activity = GroupActivity::new();
+
+        // Record 300 requests (should give 1 rps over 300s window)
+        for i in 0..300 {
+            activity.record_request(i);
+        }
+
+        let rps = activity.requests_per_second(300);
+        assert!(
+            (rps - 1.0).abs() < 0.01,
+            "300 requests over 300s should give ~1 rps, got {}",
+            rps
+        );
+    }
+
+    #[test]
+    fn test_group_activity_is_inactive() {
+        let mut activity = GroupActivity::new();
+
+        // Initially inactive (no requests)
+        assert!(
+            activity.is_inactive(0),
+            "New activity tracker should be inactive"
+        );
+
+        // Record a request
+        activity.record_request(0);
+        assert!(
+            !activity.is_inactive(0),
+            "Should be active after recording request"
+        );
+
+        // Advance past the window
+        assert!(
+            activity.is_inactive(ACTIVITY_WINDOW_SECS + 10),
+            "Should be inactive after window elapses"
+        );
+    }
+}

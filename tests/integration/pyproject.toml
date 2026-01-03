@@ -28,6 +28,7 @@ markers = [
     "auth: tests requiring authentication",
     "posting: tests that create NNTP posts",
     "slow: tests that take longer to run",
+    "performance: tests measuring performance/latency metrics",
 ]
 # Default to showing test output
 addopts = "-v --tb=short"

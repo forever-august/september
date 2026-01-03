@@ -1260,4 +1260,55 @@ mod tests {
         config.allow_insecure_auth = true;
         assert!(!config.requires_tls_for_credentials());
     }
+
+    // =============================================================================
+    // Cache-Control header tests
+    // =============================================================================
+
+    #[test]
+    fn test_cache_control_article() {
+        assert!(CACHE_CONTROL_ARTICLE.contains("max-age=3600"));
+        assert!(CACHE_CONTROL_ARTICLE.contains("stale-while-revalidate=60"));
+    }
+
+    #[test]
+    fn test_cache_control_thread_view() {
+        assert!(CACHE_CONTROL_THREAD_VIEW.contains("max-age=2"));
+        assert!(CACHE_CONTROL_THREAD_VIEW.contains("stale-while-revalidate=5"));
+    }
+
+    #[test]
+    fn test_cache_control_thread_list() {
+        assert!(CACHE_CONTROL_THREAD_LIST.contains("max-age=2"));
+        assert!(CACHE_CONTROL_THREAD_LIST.contains("stale-while-revalidate=5"));
+    }
+
+    #[test]
+    fn test_cache_control_home() {
+        assert!(CACHE_CONTROL_HOME.contains("max-age=60"));
+        assert!(CACHE_CONTROL_HOME.contains("stale-while-revalidate=30"));
+    }
+
+    #[test]
+    fn test_cache_control_static() {
+        assert!(CACHE_CONTROL_STATIC.contains("max-age=86400"));
+        assert!(CACHE_CONTROL_STATIC.contains("immutable"));
+    }
+
+    #[test]
+    fn test_cache_control_stale_if_error() {
+        // All non-static cache headers should include stale-if-error=300
+        assert!(CACHE_CONTROL_HOME.contains("stale-if-error=300"));
+        assert!(CACHE_CONTROL_THREAD_LIST.contains("stale-if-error=300"));
+        assert!(CACHE_CONTROL_THREAD_VIEW.contains("stale-if-error=300"));
+        assert!(CACHE_CONTROL_ARTICLE.contains("stale-if-error=300"));
+        // CACHE_CONTROL_STATIC and CACHE_CONTROL_ERROR do not include stale-if-error
+        assert!(!CACHE_CONTROL_STATIC.contains("stale-if-error"));
+        assert!(!CACHE_CONTROL_ERROR.contains("stale-if-error"));
+    }
+
+    #[test]
+    fn test_cache_control_error() {
+        assert!(CACHE_CONTROL_ERROR.contains("max-age=5"));
+    }
 }

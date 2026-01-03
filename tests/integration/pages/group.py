@@ -1,12 +1,20 @@
 """Page object for the group/thread list page."""
 
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 from helpers.exceptions import NoTestDataError, PageLoadError
 from helpers.selectors import Selectors
+from helpers.waits import POLL_FREQUENCY
 
 from .base import BasePage
+
+# Timeout for page load - longer than default to handle cold starts
+PAGE_LOAD_TIMEOUT = 10
 
 
 class GroupPage(BasePage):
@@ -20,11 +28,25 @@ class GroupPage(BasePage):
         """Navigate to the group page and wait for it to load."""
         self.driver.get(f"{self.base_url}/g/{self.group_name}")
 
-        # Page must have either thread list or empty state
-        has_threads = self.exists(Selectors.ThreadList.CONTAINER)
-        has_empty = self.exists(Selectors.ThreadList.EMPTY_STATE)
+        # Wait for either thread list or empty state to appear
+        # This handles cold start delays when the app is warming up
+        thread_list_selector = Selectors.ThreadList.CONTAINER
+        empty_state_selector = Selectors.ThreadList.EMPTY_STATE
 
-        if not has_threads and not has_empty:
+        try:
+            WebDriverWait(
+                self.driver, PAGE_LOAD_TIMEOUT, poll_frequency=POLL_FREQUENCY
+            ).until(
+                EC.any_of(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, thread_list_selector)
+                    ),
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, empty_state_selector)
+                    ),
+                )
+            )
+        except TimeoutException:
             raise PageLoadError(
                 f"Group page for {self.group_name} did not load correctly"
             )

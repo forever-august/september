@@ -1,0 +1,2132 @@
+# features.yml - September NNTP Web Gateway
+# Generated from existing codebase analysis
+#
+# This file tracks features, requirements, and test coverage for the September project.
+# See docs/architecture.md for system overview.
+
+# =============================================================================
+# Feature 1: NNTP Worker Pool
+# =============================================================================
+feature: "NNTP Worker Pool"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Workers maintain persistent NNTP connections with auto-reconnect
+  - Three priority levels (High/Normal/Low) for request scheduling
+  - Aging mechanism prevents starvation of low-priority requests under sustained load
+  - Each server has its own independent worker pool
+known-issues: []
+requirements:
+  wp-1:
+    description: "The system SHALL create a configurable number of workers per NNTP server"
+    status: Complete
+    tested-by: [manual-worker-count-config]
+  wp-2:
+    description: "When processing requests, workers SHALL check queues in priority order (High, Normal, Low)"
+    status: Complete
+    tested-by: [rust-priority-ordering]
+  wp-3:
+    description: "The system SHALL assign GetArticle requests to High priority"
+    status: Complete
+    tested-by: [rust-priority-get-article]
+  wp-4:
+    description: "The system SHALL assign PostArticle requests to High priority"
+    status: Complete
+    tested-by: [rust-priority-post-article]
+  wp-5:
+    description: "The system SHALL assign CheckArticleExists requests to High priority"
+    status: Complete
+    tested-by: [rust-priority-check-article]
+  wp-6:
+    description: "The system SHALL assign GetThreads requests to Normal priority"
+    status: Complete
+    tested-by: [rust-priority-get-threads]
+  wp-7:
+    description: "The system SHALL assign GetGroups requests to Normal priority"
+    status: Complete
+    tested-by: [rust-priority-get-groups]
+  wp-8:
+    description: "The system SHALL assign GetGroupStats requests to Low priority"
+    status: Complete
+    tested-by: [rust-priority-get-group-stats]
+  wp-9:
+    description: "The system SHALL assign GetNewArticles requests to Low priority"
+    status: Complete
+    tested-by: [rust-priority-get-new-articles]
+  wp-10:
+    description: "When a low-priority request has waited longer than NNTP_PRIORITY_AGING_SECS, the system SHALL process it before normal-priority requests"
+    status: Complete
+    tested-by: [manual-priority-aging]
+  wp-11:
+    description: "When a worker loses its NNTP connection, it SHALL automatically reconnect after NNTP_RECONNECT_DELAY_SECS"
+    status: Complete
+    tested-by: [manual-worker-reconnect]
+  wp-12:
+    description: "The system SHALL detect server capabilities via the CAPABILITIES command on connection"
+    status: Complete
+    tested-by: [manual-capabilities-detection]
+  wp-13:
+    description: "When HDR command is supported with References in overview, the system SHALL use OVER for thread fetching"
+    status: Complete
+    tested-by: [manual-over-command-usage]
+  wp-14:
+    description: "When OVER is not available, the system SHALL fall back to HDR command"
+    status: Complete
+    tested-by: [manual-hdr-fallback]
+  wp-15:
+    description: "When neither OVER nor HDR is available, the system SHALL fall back to HEAD command"
+    status: Complete
+    tested-by: [manual-head-fallback]
+test-cases:
+  rust-priority-ordering:
+    name: "test_priority_ordering"
+    file: "src/nntp/messages.rs"
+    description: "Given Priority enum values, when compared, then High < Normal < Low"
+    passing: true
+    type: unit
+  rust-priority-get-article:
+    name: "test_priority_get_article_is_high"
+    file: "src/nntp/messages.rs"
+    description: "Given GetArticle request, when priority() called, then returns High"
+    passing: true
+    type: unit
+  rust-priority-post-article:
+    name: "test_priority_post_article_is_high"
+    file: "src/nntp/messages.rs"
+    description: "Given PostArticle request, when priority() called, then returns High"
+    passing: true
+    type: unit
+  rust-priority-check-article:
+    name: "test_priority_check_article_exists_is_high"
+    file: "src/nntp/messages.rs"
+    description: "Given CheckArticleExists request, when priority() called, then returns High"
+    passing: true
+    type: unit
+  rust-priority-get-threads:
+    name: "test_priority_get_threads_is_normal"
+    file: "src/nntp/messages.rs"
+    description: "Given GetThreads request, when priority() called, then returns Normal"
+    passing: true
+    type: unit
+  rust-priority-get-groups:
+    name: "test_priority_get_groups_is_normal"
+    file: "src/nntp/messages.rs"
+    description: "Given GetGroups request, when priority() called, then returns Normal"
+    passing: true
+    type: unit
+  rust-priority-get-group-stats:
+    name: "test_priority_get_group_stats_is_low"
+    file: "src/nntp/messages.rs"
+    description: "Given GetGroupStats request, when priority() called, then returns Low"
+    passing: true
+    type: unit
+  rust-priority-get-new-articles:
+    name: "test_priority_get_new_articles_is_low"
+    file: "src/nntp/messages.rs"
+    description: "Given GetNewArticles request, when priority() called, then returns Low"
+    passing: true
+    type: unit
+  rust-priority-display:
+    name: "test_priority_display"
+    file: "src/nntp/messages.rs"
+    description: "Given Priority enum, when formatted, then displays lowercase string"
+    passing: true
+    type: unit
+  rust-nntp-error-display:
+    name: "test_nntp_error_display"
+    file: "src/nntp/messages.rs"
+    description: "Given NntpError, when formatted, then displays error message"
+    passing: true
+    type: unit
+  manual-worker-count-config:
+    name: "manual_test_worker_count_configurable"
+    file: "manual"
+    description: "Manual: 1) Set workers=3 in server config. 2) Start September. 3) Verify logs show 'Spawned NNTP workers' with count=3."
+    passing: true
+    type: manual
+  manual-priority-aging:
+    name: "manual_test_priority_aging"
+    file: "manual"
+    description: "Manual: Code review confirms worker.rs checks NNTP_PRIORITY_AGING_SECS (10s) and promotes low-priority requests that have waited longer than threshold before normal-priority."
+    passing: true
+    type: manual
+  manual-worker-reconnect:
+    name: "manual_test_worker_reconnect"
+    file: "manual"
+    description: "Manual: 1) Start September connected to NNTP server. 2) Kill NNTP server connection. 3) Verify logs show reconnect attempt after NNTP_RECONNECT_DELAY_SECS (5s). 4) Restart NNTP server and verify reconnection succeeds."
+    passing: true
+    type: manual
+  manual-capabilities-detection:
+    name: "manual_test_capabilities_detection"
+    file: "manual"
+    description: "Manual: 1) Start September with debug logging. 2) Check logs for CAPABILITIES command sent after connection. 3) Verify detected capabilities are logged (e.g., 'Server supports OVER', 'HDR available')."
+    passing: true
+    type: manual
+  manual-over-command-usage:
+    name: "manual_test_over_command_usage"
+    file: "manual"
+    description: "Manual: 1) Connect to server supporting OVER with References. 2) Load a group's thread list. 3) Verify logs show OVER command used for fetching thread metadata."
+    passing: true
+    type: manual
+  manual-hdr-fallback:
+    name: "manual_test_hdr_fallback"
+    file: "manual"
+    description: "Manual: Code review confirms worker.rs checks capabilities and falls back to HDR command when OVER is unavailable. Verified by checking FetchMethod enum usage."
+    passing: true
+    type: manual
+  manual-head-fallback:
+    name: "manual_test_head_fallback"
+    file: "manual"
+    description: "Manual: Code review confirms worker.rs falls back to individual HEAD commands when neither OVER nor HDR is available. Limited to NNTP_MAX_ARTICLES_HEAD_FALLBACK articles."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 2: Request Coalescing
+# =============================================================================
+feature: "Request Coalescing"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Coalescing occurs at both NntpService (per-server) and NntpFederatedService (global) levels
+  - Uses broadcast channels to notify all waiters of shared results
+  - Pending requests include timestamps for timeout checking
+  - Arc-wrapped types avoid cloning large responses on broadcast
+known-issues: []
+requirements:
+  rc-1:
+    description: "When multiple requests arrive for the same article, the system SHALL coalesce them into a single NNTP request"
+    status: Complete
+    tested-by: [manual-coalesce-articles]
+  rc-2:
+    description: "When multiple requests arrive for the same group's threads, the system SHALL coalesce them into a single NNTP request"
+    status: Complete
+    tested-by: [manual-coalesce-threads]
+  rc-3:
+    description: "When multiple requests arrive for the group list, the system SHALL coalesce them into a single NNTP request"
+    status: Complete
+    tested-by: [manual-coalesce-groups]
+  rc-4:
+    description: "When multiple requests arrive for the same group stats, the system SHALL coalesce them into a single NNTP request"
+    status: Complete
+    tested-by: [manual-coalesce-stats]
+  rc-5:
+    description: "When a coalesced request completes, the system SHALL broadcast the result to all waiting subscribers"
+    status: Complete
+    tested-by: [manual-coalesce-broadcast]
+  rc-6:
+    description: "The system SHALL remove pending request entries after the result is broadcast"
+    status: Complete
+    tested-by: [manual-coalesce-cleanup]
+  rc-7:
+    description: "When a pending request times out, the system SHALL consider it expired and allow new requests"
+    status: Complete
+    tested-by: [manual-coalesce-timeout]
+  rc-8:
+    description: "The system SHALL use Arc-wrapped types for large responses to avoid cloning on broadcast"
+    status: Complete
+    tested-by: [manual-coalesce-arc]
+test-cases:
+  manual-coalesce-articles:
+    name: "manual_test_article_coalescing"
+    file: "manual"
+    description: "Manual: 1) Enable debug logging. 2) Open same article URL in two browser tabs simultaneously. 3) Verify logs show 'coalesced = true' on second request. 4) Confirm only one NNTP ARTICLE command was sent."
+    passing: true
+    type: manual
+  manual-coalesce-threads:
+    name: "manual_test_threads_coalescing"
+    file: "manual"
+    description: "Manual: 1) Enable debug logging. 2) Open same group URL in two tabs simultaneously. 3) Verify logs show 'coalesced = true' on second request for get_threads."
+    passing: true
+    type: manual
+  manual-coalesce-groups:
+    name: "manual_test_groups_coalescing"
+    file: "manual"
+    description: "Manual: 1) Clear caches and enable debug logging. 2) Open homepage in two tabs simultaneously. 3) Verify logs show 'coalesced = true' for get_groups on second request."
+    passing: true
+    type: manual
+  manual-coalesce-stats:
+    name: "manual_test_stats_coalescing"
+    file: "manual"
+    description: "Manual: 1) Enable debug logging. 2) Trigger multiple group stats requests. 3) Verify logs show 'coalesced = true' for get_group_stats."
+    passing: true
+    type: manual
+  manual-coalesce-broadcast:
+    name: "manual_test_coalesce_broadcast"
+    file: "manual"
+    description: "Manual: Code review confirms broadcast::channel is used in PendingRequests and tx.send() broadcasts result to all subscribers after NNTP response."
+    passing: true
+    type: manual
+  manual-coalesce-cleanup:
+    name: "manual_test_coalesce_cleanup"
+    file: "manual"
+    description: "Manual: Code review confirms pending.remove() is called after broadcasting result in get_article, get_threads, get_groups, and get_group_stats methods."
+    passing: true
+    type: manual
+  manual-coalesce-timeout:
+    name: "manual_test_coalesce_timeout"
+    file: "manual"
+    description: "Manual: Code review confirms started_at.elapsed() is checked against request_timeout before subscribing to pending request. Expired entries are removed and new request is started."
+    passing: true
+    type: manual
+  manual-coalesce-arc:
+    name: "manual_test_coalesce_arc"
+    file: "manual"
+    description: "Manual: Code review confirms ArcPendingEntry<T> type alias uses Arc<T> for threads and groups responses. unwrap_arc() helper avoids unnecessary cloning."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 3: Federated Multi-Server
+# =============================================================================
+feature: "Federated Multi-Server"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Servers are treated as a federated pool sharing the same Usenet backbone
+  - Requests try servers in configured priority order
+  - Group lists are merged from all servers
+  - Each server maintains independent caching and worker pools
+known-issues: []
+requirements:
+  fm-1:
+    description: "The system SHALL support configuration of multiple NNTP servers"
+    status: Complete
+    tested-by: [manual-multi-server-config]
+  fm-2:
+    description: "When fetching articles, the system SHALL try servers in priority order until success"
+    status: Complete
+    tested-by: [manual-server-priority-order]
+  fm-3:
+    description: "When a server fails, the system SHALL automatically failover to the next server"
+    status: Complete
+    tested-by: [manual-server-failover]
+  fm-4:
+    description: "When fetching group lists, the system SHALL merge results from all servers"
+    status: Complete
+    tested-by: [manual-groups-merge]
+  fm-5:
+    description: "The system SHALL track which servers host which groups for optimized routing"
+    status: Complete
+    tested-by: [manual-group-server-mapping]
+  fm-6:
+    description: "Each server SHALL have independent connection and request timeout settings"
+    status: Complete
+    tested-by: [manual-per-server-timeouts]
+  fm-7:
+    description: "The system SHALL track connected worker count per server"
+    status: Complete
+    tested-by: [manual-connected-workers-count]
+  fm-8:
+    description: "The system SHALL track posting-capable worker count per server"
+    status: Complete
+    tested-by: [manual-posting-workers-count]
+test-cases:
+  manual-multi-server-config:
+    name: "manual_test_multi_server_config"
+    file: "manual"
+    description: "Manual: 1) Configure two [[server]] sections in september.toml. 2) Start September. 3) Verify logs show both servers initializing with 'Spawned NNTP workers' for each."
+    passing: true
+    type: manual
+  manual-server-priority-order:
+    name: "manual_test_server_priority_order"
+    file: "manual"
+    description: "Manual: Code review confirms services Vec is iterated in order in get_article(), trying primary server first before secondary."
+    passing: true
+    type: manual
+  manual-server-failover:
+    name: "manual_test_server_failover"
+    file: "manual"
+    description: "Manual: 1) Configure two servers, stop primary. 2) Request an article. 3) Verify logs show first server error and fallback to secondary. 4) Verify article is returned."
+    passing: true
+    type: manual
+  manual-groups-merge:
+    name: "manual_test_groups_merge"
+    file: "manual"
+    description: "Manual: Code review confirms fetch_groups_from_servers() collects groups from all servers using seen_names HashSet to deduplicate and merges into all_groups Vec."
+    passing: true
+    type: manual
+  manual-group-server-mapping:
+    name: "manual_test_group_server_mapping"
+    file: "manual"
+    description: "Manual: Code review confirms group_servers HashMap tracks which server indices carry each group, updated in fetch_groups_from_servers(). get_servers_for_group() uses this for routing."
+    passing: true
+    type: manual
+  manual-per-server-timeouts:
+    name: "manual_test_per_server_timeouts"
+    file: "manual"
+    description: "Manual: Code review confirms NntpServerConfig has connection_timeout_seconds and request_timeout_seconds fields that override global defaults. Each NntpService uses its own server_config."
+    passing: true
+    type: manual
+  manual-connected-workers-count:
+    name: "manual_test_connected_workers_count"
+    file: "manual"
+    description: "Manual: Code review confirms connected_workers AtomicUsize in NntpService is incremented/decremented by workers on connect/disconnect."
+    passing: true
+    type: manual
+  manual-posting-workers-count:
+    name: "manual_test_posting_workers_count"
+    file: "manual"
+    description: "Manual: Code review confirms posting_workers AtomicUsize tracks workers with POST capability. is_posting_allowed() returns true when count > 0."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 4: TLS Connection Handling
+# =============================================================================
+feature: "TLS Connection Handling"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - TLS is attempted first for all connections
+  - If credentials are configured, TLS is required (no fallback to plain)
+  - If no credentials, fall back to plain TCP if TLS fails
+  - Uses system root certificates for TLS validation
+known-issues: []
+requirements:
+  tls-1:
+    description: "When connecting to an NNTP server, the system SHALL attempt TLS first"
+    status: Complete
+    tested-by: [manual-tls-first]
+  tls-2:
+    description: "When credentials are configured, the system SHALL require TLS (no plain fallback)"
+    status: Complete
+    tested-by: [manual-tls-required-with-creds]
+  tls-3:
+    description: "When no credentials are configured and TLS fails, the system SHALL fall back to plain TCP"
+    status: Complete
+    tested-by: [manual-tls-plain-fallback]
+  tls-4:
+    description: "The system SHALL use system root certificates for TLS validation"
+    status: Complete
+    tested-by: [manual-tls-system-certs]
+  tls-5:
+    description: "The system SHALL log the connection type (TLS or plain) for debugging"
+    status: Complete
+    tested-by: [manual-tls-connection-logging]
+  tls-6:
+    description: "The system SHALL support optional allow_insecure_auth flag for testing"
+    status: Complete
+    tested-by: [manual-allow-insecure-auth]
+test-cases:
+  manual-tls-first:
+    name: "manual_test_tls_attempted_first"
+    file: "manual"
+    description: "Manual: 1) Configure NNTP server supporting TLS on port 563. 2) Start September with debug logging. 3) Verify logs show TLS connection attempt before any NNTP commands."
+    passing: true
+    type: manual
+  manual-tls-required-with-creds:
+    name: "manual_test_tls_required_with_credentials"
+    file: "manual"
+    description: "Manual: Code review confirms tls.rs connect() returns error if TLS fails when credentials are configured. No fallback to plain TCP with authentication."
+    passing: true
+    type: manual
+  manual-tls-plain-fallback:
+    name: "manual_test_tls_plain_fallback"
+    file: "manual"
+    description: "Manual: 1) Configure server without TLS support and no credentials. 2) Start September. 3) Verify logs show TLS attempt failed, then successful plain TCP connection."
+    passing: true
+    type: manual
+  manual-tls-system-certs:
+    name: "manual_test_tls_system_certs"
+    file: "manual"
+    description: "Manual: Code review confirms tls.rs uses rustls with webpki-roots or native-tls for system certificate store. No custom CA configuration required."
+    passing: true
+    type: manual
+  manual-tls-connection-logging:
+    name: "manual_test_tls_connection_logging"
+    file: "manual"
+    description: "Manual: 1) Start September with info logging. 2) Check logs for 'TLS connection established' or 'Plain TCP connection established' messages."
+    passing: true
+    type: manual
+  manual-allow-insecure-auth:
+    name: "manual_test_allow_insecure_auth"
+    file: "manual"
+    description: "Manual: Code review confirms NntpServerConfig has allow_insecure_auth field. When true, authentication is allowed over plain TCP for testing purposes."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 5: NNTP Caching
+# =============================================================================
+feature: "NNTP Caching"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Caching is handled at the NntpFederatedService level using moka async caches
+  - Different cache TTLs for different content types based on mutability
+  - Negative caching for not-found articles with short TTL
+  - Cache sizes are configurable
+known-issues: []
+requirements:
+  cache-1:
+    description: "The system SHALL cache articles with configurable TTL (default 1 hour)"
+    status: Complete
+    tested-by: [manual-article-cache-ttl]
+  cache-2:
+    description: "The system SHALL cache thread lists with configurable TTL (default 5 minutes)"
+    status: Complete
+    tested-by: [manual-threads-cache-ttl]
+  cache-3:
+    description: "The system SHALL cache individual threads with configurable TTL (default 5 minutes)"
+    status: Complete
+    tested-by: [manual-thread-cache-ttl]
+  cache-4:
+    description: "The system SHALL cache group lists with configurable TTL (default 1 hour)"
+    status: Complete
+    tested-by: [manual-groups-cache-ttl]
+  cache-5:
+    description: "The system SHALL cache group stats with configurable TTL (default 5 minutes)"
+    status: Complete
+    tested-by: [manual-stats-cache-ttl]
+  cache-6:
+    description: "The system SHALL maintain a negative cache for not-found articles with short TTL (60 seconds)"
+    status: Complete
+    tested-by: [manual-negative-cache-ttl]
+  cache-7:
+    description: "The system SHALL support configurable maximum cache sizes"
+    status: Complete
+    tested-by: [manual-cache-max-size]
+  cache-8:
+    description: "When an article is not found, the system SHALL cache the negative result to avoid repeated lookups"
+    status: Complete
+    tested-by: [manual-negative-cache-insert]
+  cache-9:
+    description: "Thread caches SHALL store high water mark for incremental updates"
+    status: Complete
+    tested-by: [manual-cache-hwm]
+test-cases:
+  manual-article-cache-ttl:
+    name: "manual_test_article_cache_ttl"
+    file: "manual"
+    description: "Manual: Code review confirms article_cache built with time_to_live(Duration::from_secs(cache_config.article_ttl_seconds)). Default is 3600s (1 hour) in CacheConfig."
+    passing: true
+    type: manual
+  manual-threads-cache-ttl:
+    name: "manual_test_threads_cache_ttl"
+    file: "manual"
+    description: "Manual: Code review confirms threads_cache built with time_to_live(Duration::from_secs(cache_config.threads_ttl_seconds)). Default is 300s (5 minutes)."
+    passing: true
+    type: manual
+  manual-thread-cache-ttl:
+    name: "manual_test_thread_cache_ttl"
+    file: "manual"
+    description: "Manual: Code review confirms thread_cache (single threads) built with same threads_ttl_seconds as thread lists."
+    passing: true
+    type: manual
+  manual-groups-cache-ttl:
+    name: "manual_test_groups_cache_ttl"
+    file: "manual"
+    description: "Manual: Code review confirms groups_cache built with time_to_live(Duration::from_secs(cache_config.groups_ttl_seconds)). Default is 3600s (1 hour)."
+    passing: true
+    type: manual
+  manual-stats-cache-ttl:
+    name: "manual_test_stats_cache_ttl"
+    file: "manual"
+    description: "Manual: Code review confirms group_stats_cache built with threads_ttl_seconds for TTL (5 minutes default)."
+    passing: true
+    type: manual
+  manual-negative-cache-ttl:
+    name: "manual_test_negative_cache_ttl"
+    file: "manual"
+    description: "Manual: Code review confirms article_not_found_cache built with NNTP_NEGATIVE_CACHE_TTL_SECS (30 seconds) TTL."
+    passing: true
+    type: manual
+  manual-cache-max-size:
+    name: "manual_test_cache_max_size"
+    file: "manual"
+    description: "Manual: Code review confirms all caches use max_capacity() from CacheConfig fields (max_articles, max_thread_lists, max_group_stats)."
+    passing: true
+    type: manual
+  manual-negative-cache-insert:
+    name: "manual_test_negative_cache_insert"
+    file: "manual"
+    description: "Manual: Code review confirms get_article() inserts into article_not_found_cache when all servers return 'not found' (all_not_found flag)."
+    passing: true
+    type: manual
+  manual-cache-hwm:
+    name: "manual_test_cache_hwm"
+    file: "manual"
+    description: "Manual: Code review confirms CachedThreads struct has last_article_number field storing high water mark. Updated on cache insert and incremental merges."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 6: Incremental Updates
+# =============================================================================
+feature: "Incremental Updates"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Thread caches store last article number as high water mark
+  - On cache hit, only fetch articles since high water mark
+  - Merge new articles into existing cached threads
+  - Debounce incremental checks to max 1 per second per group
+known-issues: []
+requirements:
+  inc-1:
+    description: "The system SHALL track the last article number (high water mark) in cached thread lists"
+    status: Complete
+    tested-by: [manual-inc-hwm-tracking]
+  inc-2:
+    description: "When a cached thread list is accessed, the system SHALL fetch only articles newer than the high water mark"
+    status: Complete
+    tested-by: [manual-inc-delta-fetch]
+  inc-3:
+    description: "The system SHALL merge newly fetched articles into the cached thread list"
+    status: Complete
+    tested-by: [manual-inc-merge]
+  inc-4:
+    description: "The system SHALL debounce incremental checks to maximum 1 per second per group"
+    status: Complete
+    tested-by: [manual-inc-debounce]
+  inc-5:
+    description: "When merging articles, the system SHALL update the high water mark to the newest article number"
+    status: Complete
+    tested-by: [manual-inc-hwm-update]
+  inc-6:
+    description: "The system SHALL coalesce concurrent incremental update requests for the same group"
+    status: Complete
+    tested-by: [manual-inc-coalesce]
+  inc-7:
+    description: "When a new reply is added to a thread, the system SHALL update the thread's last reply date"
+    status: Complete
+    tested-by: [manual-inc-last-reply]
+test-cases:
+  manual-inc-hwm-tracking:
+    name: "manual_test_inc_hwm_tracking"
+    file: "manual"
+    description: "Manual: Code review confirms CachedThreads has last_article_number field, and group_hwm HashMap tracks per-group high water marks."
+    passing: true
+    type: manual
+  manual-inc-delta-fetch:
+    name: "manual_test_inc_delta_fetch"
+    file: "manual"
+    description: "Manual: Code review confirms get_threads() on cache hit calls get_new_articles(group, cached.last_article_number) to fetch only newer articles."
+    passing: true
+    type: manual
+  manual-inc-merge:
+    name: "manual_test_inc_merge"
+    file: "manual"
+    description: "Manual: Code review confirms merge_articles_into_threads() is called with cached threads and new entries, returning merged result."
+    passing: true
+    type: manual
+  manual-inc-debounce:
+    name: "manual_test_inc_debounce"
+    file: "manual"
+    description: "Manual: Code review confirms should_check_incremental() checks last_incremental_check map and returns false if less than INCREMENTAL_DEBOUNCE_MS (1000ms) has elapsed."
+    passing: true
+    type: manual
+  manual-inc-hwm-update:
+    name: "manual_test_inc_hwm_update"
+    file: "manual"
+    description: "Manual: Code review confirms update_group_hwm() is called after fetching new articles, taking max of current and new article numbers."
+    passing: true
+    type: manual
+  manual-inc-coalesce:
+    name: "manual_test_inc_coalesce"
+    file: "manual"
+    description: "Manual: Code review confirms pending_incremental HashMap with broadcast channels in get_new_articles_coalesced() prevents duplicate NNTP requests."
+    passing: true
+    type: manual
+  manual-inc-last-reply:
+    name: "manual_test_inc_last_reply"
+    file: "manual"
+    description: "Manual: Code review confirms inject_reply() updates thread.last_post_date and thread.last_post_date_relative with the new article's date."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 7: Activity-Proportional Refresh
+# =============================================================================
+feature: "Activity-Proportional Refresh"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Each active group has its own background refresh task
+  - Refresh rate scales logarithmically with request activity
+  - Activity tracked via circular buffer maintaining 5-minute moving average
+  - Tasks stop when group becomes inactive (no requests in window)
+known-issues: []
+requirements:
+  apr-1:
+    description: "The system SHALL track request activity per group using a circular buffer"
+    status: Complete
+    tested-by: [manual-apr-circular-buffer]
+  apr-2:
+    description: "The activity window SHALL be 5 minutes (300 seconds)"
+    status: Complete
+    tested-by: [manual-apr-window-size]
+  apr-3:
+    description: "The system SHALL spawn a refresh task for each group with activity"
+    status: Complete
+    tested-by: [manual-apr-spawn-task]
+  apr-4:
+    description: "At high activity (10,000 req/s), the refresh period SHALL be 1 second"
+    status: Complete
+    tested-by: [rust-apr-high-activity]
+  apr-5:
+    description: "At low activity (any requests in 5 minutes), the refresh period SHALL be 30 seconds"
+    status: Complete
+    tested-by: [rust-apr-low-activity]
+  apr-6:
+    description: "The system SHALL use logarithmic scaling between min and max refresh periods"
+    status: Complete
+    tested-by: [rust-apr-log-scale]
+  apr-7:
+    description: "When a group has no activity in the window, its refresh task SHALL stop"
+    status: Complete
+    tested-by: [manual-apr-task-stop]
+  apr-8:
+    description: "Background refresh requests SHALL use Low priority"
+    status: Complete
+    tested-by: [manual-apr-low-priority]
+  apr-9:
+    description: "The system SHALL calculate O(1) requests-per-second using running totals"
+    status: Complete
+    tested-by: [manual-apr-o1-calculation]
+  apr-10:
+    description: "When time advances, the system SHALL clear expired buckets and subtract their counts"
+    status: Complete
+    tested-by: [rust-apr-bucket-expiry]
+test-cases:
+  manual-apr-circular-buffer:
+    name: "manual_test_apr_circular_buffer"
+    file: "manual"
+    description: "Manual: Code review confirms GroupActivity struct has buckets Vec with ACTIVITY_BUCKET_COUNT elements, current_bucket index, and circular advancement logic."
+    passing: true
+    type: manual
+  manual-apr-window-size:
+    name: "manual_test_apr_window_size"
+    file: "manual"
+    description: "Manual: Code review confirms ACTIVITY_WINDOW_SECS constant equals 300 (5 minutes) in config.rs."
+    passing: true
+    type: manual
+  manual-apr-spawn-task:
+    name: "manual_test_apr_spawn_task"
+    file: "manual"
+    description: "Manual: 1) Enable debug logging. 2) Access a group. 3) Verify logs show 'Spawning background refresh task' for the group."
+    passing: true
+    type: manual
+  rust-apr-high-activity:
+    name: "test_calculate_refresh_period_high_activity"
+    file: "src/nntp/federated.rs"
+    description: "Given 10000 rps, when calculate_refresh_period called, then returns ~1 second"
+    passing: true
+    type: unit
+  rust-apr-low-activity:
+    name: "test_calculate_refresh_period_low_activity"
+    file: "src/nntp/federated.rs"
+    description: "Given minimal activity (0.003 rps), when calculate_refresh_period called, then returns ~30 seconds"
+    passing: true
+    type: unit
+  rust-apr-log-scale:
+    name: "test_calculate_refresh_period_log_scale"
+    file: "src/nntp/federated.rs"
+    description: "Given 100 rps, when calculate_refresh_period called, then returns value between 1s and 30s using log10 interpolation"
+    passing: true
+    type: unit
+  manual-apr-task-stop:
+    name: "manual_test_apr_task_stop"
+    file: "manual"
+    description: "Manual: Code review confirms spawn_group_refresh_task loop checks still_active via active_groups() and breaks when group is no longer active."
+    passing: true
+    type: manual
+  manual-apr-low-priority:
+    name: "manual_test_apr_low_priority"
+    file: "manual"
+    description: "Manual: Code review confirms trigger_incremental_update() uses get_new_articles_coalesced() which sends GetNewArticles request with Low priority."
+    passing: true
+    type: manual
+  manual-apr-o1-calculation:
+    name: "manual_test_apr_o1_calculation"
+    file: "manual"
+    description: "Manual: Code review confirms GroupActivity.total_requests maintains running total, requests_per_second() returns total/ACTIVITY_WINDOW_SECS without iterating buckets."
+    passing: true
+    type: manual
+  rust-apr-bucket-expiry:
+    name: "test_group_activity_advance_clears_buckets"
+    file: "src/nntp/federated.rs"
+    description: "Given buckets with counts, when advance_to called with future time, then old buckets cleared and total_requests decremented"
+    passing: true
+    type: unit
+---
+# =============================================================================
+# Feature 8: Group Stats Refresh
+# =============================================================================
+feature: "Group Stats Refresh"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - One long-running task per group for stats refresh
+  - Fixed 1-hour interval between refreshes
+  - Coordinator detects new/removed groups and manages tasks
+known-issues: []
+requirements:
+  gsr-1:
+    description: "The system SHALL spawn a refresh task for each known group's statistics"
+    status: Complete
+    tested-by: [manual-gsr-spawn-task]
+  gsr-2:
+    description: "Group stats SHALL refresh every 1 hour (3600 seconds)"
+    status: Complete
+    tested-by: [manual-gsr-interval]
+  gsr-3:
+    description: "Group stats refresh requests SHALL use Low priority"
+    status: Complete
+    tested-by: [manual-gsr-low-priority]
+  gsr-4:
+    description: "A coordinator task SHALL detect newly added groups and spawn refresh tasks"
+    status: Complete
+    tested-by: [manual-gsr-new-groups]
+  gsr-5:
+    description: "A coordinator task SHALL detect removed groups and abort their refresh tasks"
+    status: Complete
+    tested-by: [manual-gsr-removed-groups]
+  gsr-6:
+    description: "The coordinator SHALL run on the same interval as stats refresh"
+    status: Complete
+    tested-by: [manual-gsr-coordinator-interval]
+test-cases:
+  manual-gsr-spawn-task:
+    name: "manual_test_gsr_spawn_task"
+    file: "manual"
+    description: "Manual: 1) Enable debug logging. 2) Start September. 3) After groups are fetched, verify logs show 'Starting stats refresh for group' messages for each group."
+    passing: true
+    type: manual
+  manual-gsr-interval:
+    name: "manual_test_gsr_interval"
+    file: "manual"
+    description: "Manual: Code review confirms GROUP_STATS_REFRESH_INTERVAL_SECS = 3600 in config.rs, and spawn_group_stats_refresh_task uses this in tokio::time::sleep."
+    passing: true
+    type: manual
+  manual-gsr-low-priority:
+    name: "manual_test_gsr_low_priority"
+    file: "manual"
+    description: "Manual: Code review confirms GetGroupStats request has Priority::Low in messages.rs priority() match."
+    passing: true
+    type: manual
+  manual-gsr-new-groups:
+    name: "manual_test_gsr_new_groups"
+    file: "manual"
+    description: "Manual: Code review confirms spawn_group_stats_refresh coordinator checks for groups in current_names not in tasks HashMap and spawns new refresh tasks."
+    passing: true
+    type: manual
+  manual-gsr-removed-groups:
+    name: "manual_test_gsr_removed_groups"
+    file: "manual"
+    description: "Manual: Code review confirms spawn_group_stats_refresh uses tasks.retain() to abort handles for groups no longer in current_names."
+    passing: true
+    type: manual
+  manual-gsr-coordinator-interval:
+    name: "manual_test_gsr_coordinator_interval"
+    file: "manual"
+    description: "Manual: Code review confirms spawn_group_stats_refresh coordinator loop sleeps for GROUP_STATS_REFRESH_INTERVAL_SECS between iterations."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 9: HTTP Routing
+# =============================================================================
+feature: "HTTP Routing"
+phase: Testing
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Routes organized by content type with per-route cache headers
+  - Auth and post routes have no caching (stateful)
+  - Request ID middleware enables log correlation
+known-issues: []
+requirements:
+  rt-1:
+    description: "The system SHALL serve the homepage at GET /"
+    status: Complete
+    tested-by: [py-homepage-loads]
+  rt-2:
+    description: "The system SHALL serve group browsing at GET /browse/{prefix}"
+    status: Complete
+    tested-by: [py-browse-test-prefix]
+  rt-3:
+    description: "The system SHALL serve thread lists at GET /g/{group}"
+    status: Complete
+    tested-by: [py-thread-list-loads]
+  rt-4:
+    description: "The system SHALL serve thread views at GET /g/{group}/thread/{message_id}"
+    status: Complete
+    tested-by: [py-thread-view-loads]
+  rt-5:
+    description: "The system SHALL serve article views at GET /a/{message_id}"
+    status: Complete
+    tested-by: [py-article-view-from-thread]
+  rt-6:
+    description: "The system SHALL serve compose form at GET /g/{group}/compose"
+    status: Complete
+    tested-by: [py-compose-accessible-auth]
+  rt-7:
+    description: "The system SHALL handle post submission at POST /g/{group}/post"
+    status: Complete
+    tested-by: [py-submit-new-post]
+  rt-8:
+    description: "The system SHALL handle reply submission at POST /a/{message_id}/reply"
+    status: Complete
+    tested-by: [py-submit-reply]
+  rt-9:
+    description: "The system SHALL serve login page at GET /auth/login"
+    status: Complete
+    tested-by: [py-login-page-loads]
+  rt-10:
+    description: "The system SHALL serve provider login at GET /auth/login/{provider}"
+    status: Complete
+    tested-by: [py-complete-login-flow]
+  rt-11:
+    description: "The system SHALL handle OAuth callback at GET /auth/callback/{provider}"
+    status: Complete
+    tested-by: [py-complete-login-flow]
+  rt-12:
+    description: "The system SHALL handle logout at POST /auth/logout"
+    status: Complete
+    tested-by: [py-logout-clears-session]
+  rt-13:
+    description: "The system SHALL serve privacy policy at GET /privacy"
+    status: Complete
+    tested-by: [py-privacy-page]
+  rt-14:
+    description: "The system SHALL serve health check at GET /health"
+    status: Complete
+    tested-by: [py-health-endpoint]
+  rt-15:
+    description: "The system SHALL serve static files at GET /static/*"
+    status: Complete
+    tested-by: [py-css-loads, py-js-loads]
+  rt-16:
+    description: "Each request SHALL have a unique request ID for log correlation"
+    status: Complete
+    tested-by: [manual-request-id]
+test-cases:
+  py-homepage-loads:
+    name: "test_homepage_loads"
+    file: "tests/integration/test_home.py"
+    description: "Given homepage URL, when accessed, then page loads with main content"
+    passing: true
+    type: integration
+  py-homepage-shows-groups:
+    name: "test_homepage_shows_groups"
+    file: "tests/integration/test_home.py"
+    description: "Given homepage, when loaded, then displays available newsgroups"
+    passing: true
+    type: integration
+  py-homepage-has-search:
+    name: "test_homepage_has_search_input"
+    file: "tests/integration/test_home.py"
+    description: "Given homepage, when loaded, then has search/filter input"
+    passing: true
+    type: integration
+  py-group-search-filters:
+    name: "test_group_search_filters_results"
+    file: "tests/integration/test_home.py"
+    description: "Given homepage search, when typing, then filters displayed groups"
+    passing: true
+    type: integration
+  py-browse-test-prefix:
+    name: "test_browse_test_prefix"
+    file: "tests/integration/test_home.py"
+    description: "Given /browse/test URL, when accessed, then shows test group hierarchy"
+    passing: true
+    type: integration
+  py-breadcrumb-navigation:
+    name: "test_breadcrumb_navigation"
+    file: "tests/integration/test_home.py"
+    description: "Given browse page, when viewing subgroups, then breadcrumbs present"
+    passing: true
+    type: integration
+  py-click-group-navigates:
+    name: "test_click_group_navigates"
+    file: "tests/integration/test_home.py"
+    description: "Given homepage, when clicking group card, then navigates to group"
+    passing: true
+    type: integration
+  py-css-loads:
+    name: "test_css_loads"
+    file: "tests/integration/test_home.py"
+    description: "Given page load, when CSS requested, then loads successfully"
+    passing: true
+    type: integration
+  py-js-loads:
+    name: "test_js_loads"
+    file: "tests/integration/test_home.py"
+    description: "Given page load, when JavaScript requested, then executes correctly"
+    passing: true
+    type: integration
+  py-thread-list-loads:
+    name: "test_thread_list_loads"
+    file: "tests/integration/test_threads.py"
+    description: "Given valid group, when accessing /g/{group}, then page loads"
+    passing: true
+    type: integration
+  py-thread-list-shows-threads:
+    name: "test_thread_list_shows_threads"
+    file: "tests/integration/test_threads.py"
+    description: "Given seeded group, when loading thread list, then displays threads"
+    passing: true
+    type: integration
+  py-thread-has-subject:
+    name: "test_thread_has_subject"
+    file: "tests/integration/test_threads.py"
+    description: "Given thread list, when viewing, then each thread has subject line"
+    passing: true
+    type: integration
+  py-thread-has-author:
+    name: "test_thread_has_author"
+    file: "tests/integration/test_threads.py"
+    description: "Given thread list, when viewing, then threads display author"
+    passing: true
+    type: integration
+  py-click-thread-opens-view:
+    name: "test_click_thread_opens_view"
+    file: "tests/integration/test_threads.py"
+    description: "Given thread list, when clicking thread, then opens thread view"
+    passing: true
+    type: integration
+  py-thread-view-loads:
+    name: "test_thread_view_loads"
+    file: "tests/integration/test_threads.py"
+    description: "Given thread link, when navigating, then thread view loads"
+    passing: true
+    type: integration
+  py-thread-view-shows-articles:
+    name: "test_thread_view_shows_articles"
+    file: "tests/integration/test_threads.py"
+    description: "Given thread view, when loaded, then displays articles"
+    passing: true
+    type: integration
+  py-thread-view-has-reply:
+    name: "test_thread_view_has_reply_button"
+    file: "tests/integration/test_threads.py"
+    description: "Given thread view, when authenticated, then has reply button"
+    passing: true
+    type: integration
+  py-pagination-present:
+    name: "test_pagination_present_when_needed"
+    file: "tests/integration/test_threads.py"
+    description: "Given many threads, when viewing list, then pagination appears"
+    passing: true
+    type: integration
+  py-invalid-group-error:
+    name: "test_invalid_group_shows_error"
+    file: "tests/integration/test_threads.py"
+    description: "Given invalid group, when accessing, then shows error"
+    passing: true
+    type: integration
+  py-privacy-page:
+    name: "test_privacy_page_loads"
+    file: "tests/integration/test_home.py"
+    description: "Given /privacy URL, when accessed, then privacy policy page loads"
+    passing: false
+    type: integration
+  py-health-endpoint:
+    name: "test_health_endpoint"
+    file: "tests/integration/test_home.py"
+    description: "Given /health URL, when accessed, then returns 200 OK with 'ok' body"
+    passing: false
+    type: integration
+  manual-request-id:
+    name: "manual_test_request_id"
+    file: "manual"
+    description: "Manual: 1) Enable debug logging. 2) Make HTTP request to any endpoint. 3) Verify logs include unique request_id field. 4) Verify same request_id appears in all log entries for that request."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 10: Cache-Control Headers
+# =============================================================================
+feature: "Cache-Control Headers"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - All responses include stale-while-revalidate for CDN resilience
+  - All responses include stale-if-error for thundering herd protection
+  - Cache durations based on content mutability
+  - Auth and post routes have no caching
+known-issues: []
+requirements:
+  cc-1:
+    description: "Article responses SHALL have max-age of 1 hour with stale-while-revalidate of 60 seconds"
+    status: Complete
+    tested-by: [rust-cc-article]
+  cc-2:
+    description: "Thread view responses SHALL have max-age of 2 seconds with stale-while-revalidate of 5 seconds"
+    status: Complete
+    tested-by: [rust-cc-thread-view]
+  cc-3:
+    description: "Thread list responses SHALL have max-age of 2 seconds with stale-while-revalidate of 5 seconds"
+    status: Complete
+    tested-by: [rust-cc-thread-list]
+  cc-4:
+    description: "Home and browse responses SHALL have max-age of 60 seconds with stale-while-revalidate of 30 seconds"
+    status: Complete
+    tested-by: [rust-cc-home]
+  cc-5:
+    description: "Static file responses SHALL have max-age of 1 day with immutable hint"
+    status: Complete
+    tested-by: [rust-cc-static]
+  cc-6:
+    description: "All non-static responses SHALL include stale-if-error of 5 minutes"
+    status: Complete
+    tested-by: [rust-cc-stale-if-error]
+  cc-7:
+    description: "Error responses SHALL have max-age of 5 seconds"
+    status: Complete
+    tested-by: [rust-cc-error]
+  cc-8:
+    description: "Auth route responses SHALL NOT include cache headers"
+    status: Complete
+    tested-by: [manual-cc-auth-no-cache]
+  cc-9:
+    description: "Post route responses SHALL NOT include cache headers"
+    status: Complete
+    tested-by: [manual-cc-post-no-cache]
+  cc-10:
+    description: "Health check responses SHALL NOT include cache headers"
+    status: Complete
+    tested-by: [manual-cc-health-no-cache]
+test-cases:
+  rust-cc-article:
+    name: "test_cache_control_article"
+    file: "src/config.rs"
+    description: "Given CACHE_CONTROL_ARTICLE, then contains max-age=3600 and stale-while-revalidate=60"
+    passing: true
+    type: unit
+  rust-cc-thread-view:
+    name: "test_cache_control_thread_view"
+    file: "src/config.rs"
+    description: "Given CACHE_CONTROL_THREAD_VIEW, then contains max-age=2 and stale-while-revalidate=5"
+    passing: true
+    type: unit
+  rust-cc-thread-list:
+    name: "test_cache_control_thread_list"
+    file: "src/config.rs"
+    description: "Given CACHE_CONTROL_THREAD_LIST, then contains max-age=2 and stale-while-revalidate=5"
+    passing: true
+    type: unit
+  rust-cc-home:
+    name: "test_cache_control_home"
+    file: "src/config.rs"
+    description: "Given CACHE_CONTROL_HOME, then contains max-age=60 and stale-while-revalidate=30"
+    passing: true
+    type: unit
+  rust-cc-static:
+    name: "test_cache_control_static"
+    file: "src/config.rs"
+    description: "Given CACHE_CONTROL_STATIC, then contains max-age=86400 and immutable"
+    passing: true
+    type: unit
+  rust-cc-stale-if-error:
+    name: "test_cache_control_stale_if_error"
+    file: "src/config.rs"
+    description: "Given non-static cache headers, then all contain stale-if-error=300"
+    passing: true
+    type: unit
+  rust-cc-error:
+    name: "test_cache_control_error"
+    file: "src/config.rs"
+    description: "Given CACHE_CONTROL_ERROR, then contains max-age=5"
+    passing: true
+    type: unit
+  manual-cc-auth-no-cache:
+    name: "manual_test_auth_no_cache"
+    file: "manual"
+    description: "Manual: Code review confirms auth routes in routes/auth.rs do not add Cache-Control headers. Responses use default no-cache behavior."
+    passing: true
+    type: manual
+  manual-cc-post-no-cache:
+    name: "manual_test_post_no_cache"
+    file: "manual"
+    description: "Manual: Code review confirms post/reply routes in routes/post.rs do not add Cache-Control headers. Redirect responses are not cached."
+    passing: true
+    type: manual
+  manual-cc-health-no-cache:
+    name: "manual_test_health_no_cache"
+    file: "manual"
+    description: "Manual: Code review confirms health endpoint in routes/health.rs returns plain 'ok' without Cache-Control headers."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 11: Static File Serving
+# =============================================================================
+feature: "Static File Serving"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Static files served from theme directories with fallback
+  - Path traversal protection implemented
+  - Long cache with immutable hint for fingerprinted assets
+known-issues: []
+requirements:
+  sf-1:
+    description: "The system SHALL serve static files from the active theme's static directory"
+    status: Complete
+    tested-by: [rust-static-rejects-parent-dir, rust-static-rejects-hidden-files]
+  sf-2:
+    description: "The system SHALL reject paths containing parent directory references (..)"
+    status: Complete
+    tested-by: [rust-static-rejects-parent-dir]
+  sf-3:
+    description: "The system SHALL reject paths to hidden files (starting with .)"
+    status: Complete
+    tested-by: [rust-static-rejects-hidden-files]
+  sf-4:
+    description: "The system SHALL fall back to default theme if file not found in active theme"
+    status: Complete
+    tested-by: [manual-sf-theme-fallback]
+  sf-5:
+    description: "Static file responses SHALL include Cache-Control with immutable hint"
+    status: Complete
+    tested-by: [manual-sf-cache-immutable]
+test-cases:
+  rust-static-rejects-parent-dir:
+    name: "test_validate_path_rejects_parent_dir"
+    file: "src/http/static_files.rs"
+    description: "Given path with .., when validating, then returns None"
+    passing: true
+    type: unit
+  rust-static-rejects-hidden-files:
+    name: "test_validate_path_rejects_hidden"
+    file: "src/http/static_files.rs"
+    description: "Given path starting with ., when validating, then returns None"
+    passing: true
+    type: unit
+  manual-sf-theme-fallback:
+    name: "manual_test_sf_theme_fallback"
+    file: "manual"
+    description: "Manual: Code review confirms static_files.rs serve_static() first checks {theme_dir}/{active_theme}/static/, then falls back to {theme_dir}/default/static/ if not found."
+    passing: true
+    type: manual
+  manual-sf-cache-immutable:
+    name: "manual_test_sf_cache_immutable"
+    file: "manual"
+    description: "Manual: Code review confirms static file responses use CACHE_CONTROL_STATIC header containing 'max-age=86400, immutable'. Verified in config.rs constant."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 12: Theming System
+# =============================================================================
+feature: "Theming System"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Templates loaded from theme directory with fallback to default
+  - Static files follow same layering pattern
+  - Theme directory configurable (production vs development paths)
+known-issues: []
+requirements:
+  th-1:
+    description: "The system SHALL load templates from the configured theme directory"
+    status: Complete
+    tested-by: [manual-th-load-templates]
+  th-2:
+    description: "When a template is not found in the active theme, the system SHALL fall back to the default theme"
+    status: Complete
+    tested-by: [manual-th-fallback]
+  th-3:
+    description: "The theme directory base path SHALL be configurable"
+    status: Complete
+    tested-by: [manual-th-base-path]
+  th-4:
+    description: "The active theme name SHALL be configurable"
+    status: Complete
+    tested-by: [manual-th-active-name]
+  th-5:
+    description: "Static files SHALL follow the same theme layering as templates"
+    status: Complete
+    tested-by: [manual-th-static-layering]
+test-cases:
+  manual-th-load-templates:
+    name: "manual_test_th_load_templates"
+    file: "manual"
+    description: "Manual: Code review confirms init_templates() loads templates from {theme_dir}/{theme}/templates/ path. Templates are registered with Tera."
+    passing: true
+    type: manual
+  manual-th-fallback:
+    name: "manual_test_th_fallback"
+    file: "manual"
+    description: "Manual: Code review confirms template loading first checks active theme directory, then falls back to 'default' theme if template not found."
+    passing: true
+    type: manual
+  manual-th-base-path:
+    name: "manual_test_th_base_path"
+    file: "manual"
+    description: "Manual: Code review confirms UiConfig has theme_dir field, configurable via [ui] section in september.toml. Default is /usr/share/september/themes."
+    passing: true
+    type: manual
+  manual-th-active-name:
+    name: "manual_test_th_active_name"
+    file: "manual"
+    description: "Manual: Code review confirms UiConfig has theme field for active theme name. Default is 'default'."
+    passing: true
+    type: manual
+  manual-th-static-layering:
+    name: "manual_test_th_static_layering"
+    file: "manual"
+    description: "Manual: Code review confirms static_files.rs serve_static() checks active theme static/ directory first, then falls back to default theme."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 13: OIDC Authentication
+# =============================================================================
+feature: "OIDC Authentication"
+phase: Testing
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Supports both OIDC discovery mode and manual OAuth2 endpoint configuration
+  - PKCE used for all authorization flows
+  - State parameter provides CSRF protection
+  - Multiple providers can be configured
+known-issues: []
+requirements:
+  oidc-1:
+    description: "The system SHALL support OIDC discovery mode via issuer_url"
+    status: Complete
+    tested-by: [rust-oidc-discovery-valid]
+  oidc-2:
+    description: "The system SHALL support manual OAuth2 mode with explicit endpoints"
+    status: Complete
+    tested-by: [rust-oidc-manual-valid]
+  oidc-3:
+    description: "The system SHALL reject configuration with both discovery and manual endpoints"
+    status: Complete
+    tested-by: [rust-oidc-discovery-manual-conflict]
+  oidc-4:
+    description: "The system SHALL support multiple OIDC providers"
+    status: Complete
+    tested-by: [manual-oidc-multi-provider]
+  oidc-5:
+    description: "When only one provider is configured, login SHALL redirect directly to that provider"
+    status: Complete
+    tested-by: [manual-oidc-single-provider-redirect]
+  oidc-6:
+    description: "When multiple providers are configured, login SHALL show a provider selection page"
+    status: Complete
+    tested-by: [py-login-page-loads]
+  oidc-7:
+    description: "The system SHALL use PKCE for authorization flows"
+    status: Complete
+    tested-by: [manual-oidc-pkce]
+  oidc-8:
+    description: "The system SHALL validate state parameter to prevent CSRF attacks"
+    status: Complete
+    tested-by: [manual-oidc-state-validation]
+  oidc-9:
+    description: "The system SHALL support configurable userinfo subject field for OAuth2 providers"
+    status: Complete
+    tested-by: [manual-oidc-userinfo-subject]
+  oidc-10:
+    description: "The system SHALL support return_to parameter for post-login redirect"
+    status: Complete
+    tested-by: [py-login-with-return-to]
+  oidc-11:
+    description: "The system SHALL validate provider name is URL-safe"
+    status: Complete
+    tested-by: [rust-oidc-name-invalid-chars, rust-oidc-name-empty]
+test-cases:
+  rust-oidc-discovery-valid:
+    name: "test_oidc_provider_validate_discovery_valid"
+    file: "src/config.rs"
+    description: "Given provider with issuer_url, when validated, then succeeds"
+    passing: true
+    type: unit
+  rust-oidc-manual-valid:
+    name: "test_oidc_provider_validate_manual_valid"
+    file: "src/config.rs"
+    description: "Given provider with manual endpoints, when validated, then succeeds"
+    passing: true
+    type: unit
+  rust-oidc-discovery-manual-conflict:
+    name: "test_oidc_provider_validate_discovery_and_manual_conflict"
+    file: "src/config.rs"
+    description: "Given provider with both modes, when validated, then fails"
+    passing: true
+    type: unit
+  rust-oidc-name-invalid-chars:
+    name: "test_oidc_provider_validate_name_invalid_chars"
+    file: "src/config.rs"
+    description: "Given provider with invalid name chars, when validated, then fails"
+    passing: true
+    type: unit
+  rust-oidc-name-empty:
+    name: "test_oidc_provider_validate_name_empty"
+    file: "src/config.rs"
+    description: "Given provider with empty name, when validated, then fails"
+    passing: true
+    type: unit
+  py-login-page-loads:
+    name: "test_login_page_loads"
+    file: "tests/integration/test_auth.py"
+    description: "Given /auth/login URL, when accessed, then shows login options"
+    passing: true
+    type: integration
+  py-login-link-in-header:
+    name: "test_login_link_in_header"
+    file: "tests/integration/test_auth.py"
+    description: "Given unauthenticated user, when viewing page, then login link visible"
+    passing: true
+    type: integration
+  py-complete-login-flow:
+    name: "test_complete_login_flow"
+    file: "tests/integration/test_auth.py"
+    description: "Given Dex provider, when completing login, then user authenticated"
+    passing: true
+    type: integration
+  py-login-with-return-to:
+    name: "test_login_with_return_to"
+    file: "tests/integration/test_auth.py"
+    description: "Given return_to parameter, when login completes, then redirects to return path"
+    passing: true
+    type: integration
+  manual-oidc-multi-provider:
+    name: "manual_test_oidc_multi_provider"
+    file: "manual"
+    description: "Manual: Code review confirms Config.oidc_providers is a Vec<OidcProvider> allowing multiple providers. Each provider has independent name, client_id, and endpoints."
+    passing: true
+    type: manual
+  manual-oidc-single-provider-redirect:
+    name: "manual_test_oidc_single_provider_redirect"
+    file: "manual"
+    description: "Manual: Code review confirms routes/auth.rs login_page() checks if providers.len() == 1 and returns redirect to that provider's auth URL instead of showing selection page."
+    passing: true
+    type: manual
+  manual-oidc-pkce:
+    name: "manual_test_oidc_pkce"
+    file: "manual"
+    description: "Manual: Code review confirms AuthSession stores code_verifier generated via PkceCodeChallenge::new_random_sha256(). Authorization request includes code_challenge parameter."
+    passing: true
+    type: manual
+  manual-oidc-state-validation:
+    name: "manual_test_oidc_state_validation"
+    file: "manual"
+    description: "Manual: Code review confirms callback handler verifies state from query params matches state stored in AuthSession. Mismatched state returns error."
+    passing: true
+    type: manual
+  manual-oidc-userinfo-subject:
+    name: "manual_test_oidc_userinfo_subject"
+    file: "manual"
+    description: "Manual: Code review confirms OidcProvider.userinfo_subject_field allows configuring which JSON field to use as subject from userinfo response. Defaults to 'sub'."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 14: Session Management
+# =============================================================================
+feature: "Session Management"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Sessions stored in signed HTTP-only cookies
+  - Cookie signing key derived from cookie_secret using HKDF
+  - Session expiry stored in session data
+  - CSRF token generated per session
+known-issues: []
+requirements:
+  sm-1:
+    description: "The system SHALL store session data in signed HTTP-only cookies"
+    status: Complete
+    tested-by: [manual-sm-httponly-cookies]
+  sm-2:
+    description: "The system SHALL derive cookie signing key from cookie_secret using HKDF"
+    status: Complete
+    tested-by: [manual-sm-hkdf-derivation]
+  sm-3:
+    description: "Sessions SHALL expire after configurable session_lifetime_days (default 30)"
+    status: Complete
+    tested-by: [rust-user-new-sets-expiry, rust-user-expired-false-fresh, rust-user-expired-true-past]
+  sm-4:
+    description: "The system SHALL check session expiry on each request"
+    status: Complete
+    tested-by: [manual-sm-expiry-check]
+  sm-5:
+    description: "Each session SHALL have a unique CSRF token"
+    status: Complete
+    tested-by: [manual-sm-csrf-token]
+  sm-6:
+    description: "The system SHALL support secret resolution from env:, file:, or literal"
+    status: Complete
+    tested-by: [rust-secret-literal, rust-secret-env, rust-secret-env-missing, rust-secret-file, rust-secret-file-missing]
+  sm-7:
+    description: "File-based secrets SHALL be trimmed of whitespace"
+    status: Complete
+    tested-by: [rust-secret-file]
+  sm-8:
+    description: "Session data SHALL persist across page navigation"
+    status: Complete
+    tested-by: [py-session-persists-navigation]
+  sm-9:
+    description: "Logout SHALL clear the session cookie"
+    status: Complete
+    tested-by: [py-logout-clears-session]
+test-cases:
+  rust-user-new-sets-expiry:
+    name: "test_user_new_sets_expiry"
+    file: "src/oidc/session.rs"
+    description: "Given User::new(), when called, then expiry set to now + lifetime"
+    passing: true
+    type: unit
+  rust-user-expired-false-fresh:
+    name: "test_user_is_expired_false_when_fresh"
+    file: "src/oidc/session.rs"
+    description: "Given fresh user, when checking expiry, then returns false"
+    passing: true
+    type: unit
+  rust-user-expired-true-past:
+    name: "test_user_is_expired_true_when_past"
+    file: "src/oidc/session.rs"
+    description: "Given expired user, when checking expiry, then returns true"
+    passing: true
+    type: unit
+  rust-secret-literal:
+    name: "test_resolve_secret_literal"
+    file: "src/config.rs"
+    description: "Given literal secret, when resolved, then returns value unchanged"
+    passing: true
+    type: unit
+  rust-secret-env:
+    name: "test_resolve_secret_env"
+    file: "src/config.rs"
+    description: "Given env:VAR, when resolved, then returns environment value"
+    passing: true
+    type: unit
+  rust-secret-env-missing:
+    name: "test_resolve_secret_env_missing"
+    file: "src/config.rs"
+    description: "Given env:MISSING, when resolved, then returns error"
+    passing: true
+    type: unit
+  rust-secret-file:
+    name: "test_resolve_secret_file"
+    file: "src/config.rs"
+    description: "Given file:path, when resolved, then returns trimmed file contents"
+    passing: true
+    type: unit
+  rust-secret-file-missing:
+    name: "test_resolve_secret_file_missing"
+    file: "src/config.rs"
+    description: "Given file:missing, when resolved, then returns error"
+    passing: true
+    type: unit
+  py-session-persists-navigation:
+    name: "test_session_persists_across_navigation"
+    file: "tests/integration/test_auth.py"
+    description: "Given authenticated user, when navigating pages, then session persists"
+    passing: true
+    type: integration
+  py-logout-clears-session:
+    name: "test_logout_clears_session"
+    file: "tests/integration/test_auth.py"
+    description: "Given authenticated user, when logging out, then session cleared"
+    passing: true
+    type: integration
+  manual-sm-httponly-cookies:
+    name: "manual_test_sm_httponly_cookies"
+    file: "manual"
+    description: "Manual: Code review confirms oidc/session.rs creates cookies with HttpOnly flag set. SameSite=Lax also set for CSRF protection."
+    passing: true
+    type: manual
+  manual-sm-hkdf-derivation:
+    name: "manual_test_sm_hkdf_derivation"
+    file: "manual"
+    description: "Manual: Code review confirms oidc/session.rs uses HKDF (from hkdf crate) to derive signing key from cookie_secret. Key stretched to 256 bits."
+    passing: true
+    type: manual
+  manual-sm-expiry-check:
+    name: "manual_test_sm_expiry_check"
+    file: "manual"
+    description: "Manual: Code review confirms middleware.rs or session extraction calls user.is_expired() and treats expired sessions as unauthenticated."
+    passing: true
+    type: manual
+  manual-sm-csrf-token:
+    name: "manual_test_sm_csrf_token"
+    file: "manual"
+    description: "Manual: Code review confirms User struct has csrf_token field generated via random bytes on session creation. Token validated on POST requests."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 15: Article Viewing
+# =============================================================================
+feature: "Article Viewing"
+phase: Testing
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Articles displayed with headers (From, Subject, Date)
+  - Block quotes stripped from previews
+  - Date displayed as relative time (timeago filter)
+known-issues: []
+requirements:
+  av-1:
+    description: "The system SHALL display article headers (From, Subject, Date)"
+    status: Complete
+    tested-by: [py-article-shows-headers]
+  av-2:
+    description: "The system SHALL display article body content"
+    status: Complete
+    tested-by: [py-article-shows-body]
+  av-3:
+    description: "The system SHALL strip block quotes from article previews"
+    status: Complete
+    tested-by: [rust-strip-quotes-simple, rust-strip-quotes-attribution, rust-strip-quotes-ends]
+  av-4:
+    description: "The system SHALL display dates as relative time (e.g., '2 hours ago')"
+    status: Complete
+    tested-by: [manual-av-timeago]
+  av-5:
+    description: "The system SHALL provide navigation back to the group from article view"
+    status: Complete
+    tested-by: [py-back-to-group]
+  av-6:
+    description: "When an article is not found, the system SHALL display an error page"
+    status: Complete
+    tested-by: [py-invalid-article-error]
+  av-7:
+    description: "The system SHALL detect quote lines starting with >"
+    status: Complete
+    tested-by: [rust-is-quote-line-block]
+  av-8:
+    description: "The system SHALL detect attribution lines (e.g., 'On Date, Person wrote:')"
+    status: Complete
+    tested-by: [rust-is-quote-line-attribution]
+  av-9:
+    description: "Quotes in the middle of content SHALL be preserved"
+    status: Complete
+    tested-by: [rust-strip-quotes-preserves-middle]
+test-cases:
+  rust-strip-quotes-simple:
+    name: "test_strip_block_quotes_simple"
+    file: "src/templates.rs"
+    description: "Given simple quoted text, when stripped, then only non-quoted remains"
+    passing: true
+    type: unit
+  rust-strip-quotes-attribution:
+    name: "test_strip_block_quotes_with_attribution_no_whitespace"
+    file: "src/templates.rs"
+    description: "Given attribution followed by quotes, when stripped, then both removed"
+    passing: true
+    type: unit
+  rust-strip-quotes-ends:
+    name: "test_strip_block_quotes_at_both_ends"
+    file: "src/templates.rs"
+    description: "Given quotes at start and end, when stripped, then middle content remains"
+    passing: true
+    type: unit
+  rust-strip-quotes-preserves-middle:
+    name: "test_strip_block_quotes_preserves_middle"
+    file: "src/templates.rs"
+    description: "Given quotes in middle, when stripped, then preserved"
+    passing: true
+    type: unit
+  rust-strip-quotes-all:
+    name: "test_strip_block_quotes_all_quotes"
+    file: "src/templates.rs"
+    description: "Given all quoted content, when stripped, then result is empty"
+    passing: true
+    type: unit
+  rust-is-quote-line-block:
+    name: "test_is_quote_line_block_quote"
+    file: "src/templates.rs"
+    description: "Given line starting with >, when checked, then returns true"
+    passing: true
+    type: unit
+  rust-is-quote-line-attribution:
+    name: "test_is_quote_line_attribution"
+    file: "src/templates.rs"
+    description: "Given attribution line, when checked, then returns true"
+    passing: true
+    type: unit
+  rust-is-quote-line-not:
+    name: "test_is_quote_line_not_quote"
+    file: "src/templates.rs"
+    description: "Given normal text, when checked, then returns false"
+    passing: true
+    type: unit
+  py-article-view-from-thread:
+    name: "test_article_view_from_thread"
+    file: "tests/integration/test_articles.py"
+    description: "Given thread view, when clicking article link, then article loads"
+    passing: true
+    type: integration
+  py-article-shows-headers:
+    name: "test_article_shows_headers"
+    file: "tests/integration/test_articles.py"
+    description: "Given article view, when loaded, then displays headers"
+    passing: true
+    type: integration
+  py-article-shows-body:
+    name: "test_article_shows_body"
+    file: "tests/integration/test_articles.py"
+    description: "Given article view, when loaded, then displays body"
+    passing: true
+    type: integration
+  py-back-to-group:
+    name: "test_back_to_group"
+    file: "tests/integration/test_articles.py"
+    description: "Given article view, when navigating back, then returns to group"
+    passing: true
+    type: integration
+  py-header-navigation:
+    name: "test_header_navigation"
+    file: "tests/integration/test_articles.py"
+    description: "Given any page, when viewing header, then has navigation"
+    passing: true
+    type: integration
+  py-invalid-article-error:
+    name: "test_invalid_article_shows_error"
+    file: "tests/integration/test_articles.py"
+    description: "Given invalid article ID, when accessed, then shows error"
+    passing: true
+    type: integration
+  manual-av-timeago:
+    name: "manual_test_av_timeago"
+    file: "manual"
+    description: "Manual: Code review confirms templates.rs registers 'timeago' filter that converts DateTime to relative time strings (e.g., '2 hours ago'). Filter used in thread list and article views."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 16: Article Posting
+# =============================================================================
+feature: "Article Posting"
+phase: Testing
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Posting requires authentication with valid email
+  - CSRF token required for all post/reply submissions
+  - Group must allow posting (checked via NNTP capabilities)
+  - Poll for new post visibility after submission
+known-issues: []
+requirements:
+  ap-1:
+    description: "The compose page SHALL require authentication"
+    status: Complete
+    tested-by: [py-compose-requires-auth]
+  ap-2:
+    description: "When authenticated, the compose page SHALL display a form with subject and body fields"
+    status: Complete
+    tested-by: [py-compose-has-fields]
+  ap-3:
+    description: "The compose form SHALL include a CSRF token"
+    status: Complete
+    tested-by: [py-compose-has-csrf]
+  ap-4:
+    description: "Posts with empty subject SHALL be rejected"
+    status: Complete
+    tested-by: [py-empty-subject-rejected]
+  ap-5:
+    description: "Unauthenticated POST to /g/{group}/post SHALL return 401"
+    status: Complete
+    tested-by: [py-unauth-post-rejected]
+  ap-6:
+    description: "Unauthenticated POST to /a/{message_id}/reply SHALL return 401"
+    status: Complete
+    tested-by: [py-unauth-reply-rejected]
+  ap-7:
+    description: "The user SHALL have a valid email to post"
+    status: Complete
+    tested-by: [manual-ap-valid-email]
+  ap-8:
+    description: "The group SHALL allow posting (checked via NNTP capabilities)"
+    status: Complete
+    tested-by: [manual-ap-group-posting-capability]
+  ap-9:
+    description: "After successful post, the system SHALL poll for visibility"
+    status: Complete
+    tested-by: [manual-ap-poll-visibility]
+  ap-10:
+    description: "Reply form SHALL be available on thread/article view when authenticated"
+    status: Complete
+    tested-by: [py-reply-form-available]
+  ap-11:
+    description: "Successful post submission SHALL redirect away from compose page"
+    status: Complete
+    tested-by: [py-submit-new-post]
+test-cases:
+  py-compose-requires-auth:
+    name: "test_compose_requires_auth"
+    file: "tests/integration/test_posting.py"
+    description: "Given unauthenticated user, when accessing compose, then requires auth"
+    passing: true
+    type: integration
+  py-compose-accessible-auth:
+    name: "test_compose_accessible_when_authenticated"
+    file: "tests/integration/test_posting.py"
+    description: "Given authenticated user, when accessing compose, then form displayed"
+    passing: true
+    type: integration
+  py-compose-has-fields:
+    name: "test_compose_form_has_required_fields"
+    file: "tests/integration/test_posting.py"
+    description: "Given compose form, when displayed, then has subject and body fields"
+    passing: true
+    type: integration
+  py-compose-has-csrf:
+    name: "test_compose_form_has_csrf_token"
+    file: "tests/integration/test_posting.py"
+    description: "Given compose form, when displayed, then has CSRF token"
+    passing: true
+    type: integration
+  py-submit-new-post:
+    name: "test_submit_new_post"
+    file: "tests/integration/test_posting.py"
+    description: "Given valid post data, when submitted, then redirects to group/thread"
+    passing: true
+    type: integration
+  py-empty-subject-rejected:
+    name: "test_empty_subject_rejected"
+    file: "tests/integration/test_posting.py"
+    description: "Given empty subject, when submitting, then rejected"
+    passing: true
+    type: integration
+  py-reply-form-available:
+    name: "test_reply_form_available"
+    file: "tests/integration/test_posting.py"
+    description: "Given authenticated user on thread view, when viewing, then reply form available"
+    passing: true
+    type: integration
+  py-submit-reply:
+    name: "test_submit_reply"
+    file: "tests/integration/test_posting.py"
+    description: "Given valid reply data, when submitted, then stays on thread page"
+    passing: true
+    type: integration
+  py-unauth-post-rejected:
+    name: "test_unauthenticated_post_submission_rejected"
+    file: "tests/integration/test_posting.py"
+    description: "Given unauthenticated request, when POSTing to /g/{group}/post, then 401"
+    passing: true
+    type: integration
+  py-unauth-reply-rejected:
+    name: "test_unauthenticated_reply_submission_rejected"
+    file: "tests/integration/test_posting.py"
+    description: "Given unauthenticated request, when POSTing to /a/{id}/reply, then 401"
+    passing: true
+    type: integration
+  py-compose-shows-auth-required:
+    name: "test_compose_page_shows_auth_required"
+    file: "tests/integration/test_posting.py"
+    description: "Given unauthenticated user, when viewing compose, then shows auth message"
+    passing: true
+    type: integration
+  manual-ap-valid-email:
+    name: "manual_test_ap_valid_email"
+    file: "manual"
+    description: "Manual: Code review confirms routes/post.rs checks user.email is Some() before allowing post. If no email, returns error asking user to set email in OIDC provider."
+    passing: true
+    type: manual
+  manual-ap-group-posting-capability:
+    name: "manual_test_ap_group_posting_capability"
+    file: "manual"
+    description: "Manual: Code review confirms routes/post.rs calls nntp.is_posting_allowed() which checks posting_workers count. If 0, posting is disabled for the group."
+    passing: true
+    type: manual
+  manual-ap-poll-visibility:
+    name: "manual_test_ap_poll_visibility"
+    file: "manual"
+    description: "Manual: Code review confirms routes/post.rs after successful POST submission calls poll_for_article() with message_id, polling NNTP server until article is visible or timeout."
+    passing: true
+    type: manual
+---
+# =============================================================================
+# Feature 17: Production Readiness
+# =============================================================================
+feature: "Production Readiness"
+phase: Complete
+version: 1
+changelog: |
+  ## [1]
+  ### Added
+  - Initial feature tracking from existing codebase
+decisions:
+  - Health endpoint for container orchestration
+  - Graceful shutdown with 30-second connection drain
+  - SIGHUP for certificate hot-reload in manual TLS mode
+  - JSON structured logging option for production
+  - Packaging for deb, rpm, and tarball distribution
+known-issues: []
+requirements:
+  pr-1:
+    description: "The system SHALL expose a health check endpoint at GET /health"
+    status: Complete
+    tested-by: [py-health-endpoint]
+  pr-2:
+    description: "The health endpoint SHALL return 200 OK with body 'ok'"
+    status: Complete
+    tested-by: [py-health-endpoint]
+  pr-3:
+    description: "When receiving SIGTERM or SIGINT, the system SHALL initiate graceful shutdown"
+    status: Complete
+    tested-by: [manual-pr-graceful-shutdown]
+  pr-4:
+    description: "Graceful shutdown SHALL wait up to 30 seconds for connections to drain"
+    status: Complete
+    tested-by: [manual-pr-shutdown-timeout]
+  pr-5:
+    description: "When receiving SIGHUP in manual TLS mode, the system SHALL reload certificates"
+    status: Complete
+    tested-by: [manual-pr-sighup-reload]
+  pr-6:
+    description: "The system SHALL support JSON structured log format"
+    status: Complete
+    tested-by: [manual-pr-json-log]
+  pr-7:
+    description: "The system SHALL support text human-readable log format"
+    status: Complete
+    tested-by: [manual-pr-text-log]
+  pr-8:
+    description: "Log format SHALL be configurable via config file or CLI"
+    status: Complete
+    tested-by: [manual-pr-log-format-config]
+  pr-9:
+    description: "The system SHALL support CLI option for config file path (-c/--config)"
+    status: Complete
+    tested-by: [manual-pr-cli-config]
+  pr-10:
+    description: "The system SHALL support CLI option for log level (-l/--log-level)"
+    status: Complete
+    tested-by: [manual-pr-cli-log-level]
+  pr-11:
+    description: "CLI log level SHALL override environment variable RUST_LOG"
+    status: Complete
+    tested-by: [manual-pr-cli-override-env]
+  pr-12:
+    description: "The system SHALL support packaging as .deb for Debian/Ubuntu"
+    status: Complete
+    tested-by: [manual-pr-deb-package]
+  pr-13:
+    description: "The system SHALL support packaging as .rpm for RHEL/Fedora"
+    status: Complete
+    tested-by: [manual-pr-rpm-package]
+  pr-14:
+    description: "Package SHALL include systemd service unit file"
+    status: Complete
+    tested-by: [manual-pr-systemd-unit]
+  pr-15:
+    description: "Package SHALL include man page"
+    status: Complete
+    tested-by: [manual-pr-man-page]
+  pr-16:
+    description: "TLS configuration SHALL support ACME mode for automatic Let's Encrypt certificates"
+    status: Complete
+    tested-by: [rust-tls-acme-valid]
+  pr-17:
+    description: "TLS configuration SHALL support manual mode with user-provided certificates"
+    status: Complete
+    tested-by: [rust-tls-manual-valid]
+  pr-18:
+    description: "TLS configuration SHALL support none mode for plain HTTP"
+    status: Complete
+    tested-by: [rust-tls-none-ok]
+  pr-19:
+    description: "ACME mode SHALL require acme_domains configuration"
+    status: Complete
+    tested-by: [rust-tls-acme-missing-domains]
+  pr-20:
+    description: "ACME mode SHALL require acme_email configuration"
+    status: Complete
+    tested-by: [rust-tls-acme-missing-email]
+  pr-21:
+    description: "Manual TLS mode SHALL require cert_path configuration"
+    status: Complete
+    tested-by: [rust-tls-manual-missing-cert]
+  pr-22:
+    description: "Manual TLS mode SHALL require key_path configuration"
+    status: Complete
+    tested-by: [rust-tls-manual-missing-key]
+test-cases:
+  rust-tls-none-ok:
+    name: "test_tls_config_validate_none_ok"
+    file: "src/config.rs"
+    description: "Given TLS mode none, when validated, then succeeds"
+    passing: true
+    type: unit
+  rust-tls-acme-missing-domains:
+    name: "test_tls_config_validate_acme_missing_domains"
+    file: "src/config.rs"
+    description: "Given ACME mode without domains, when validated, then fails"
+    passing: true
+    type: unit
+  rust-tls-acme-missing-email:
+    name: "test_tls_config_validate_acme_missing_email"
+    file: "src/config.rs"
+    description: "Given ACME mode without email, when validated, then fails"
+    passing: true
+    type: unit
+  rust-tls-acme-valid:
+    name: "test_tls_config_validate_acme_valid"
+    file: "src/config.rs"
+    description: "Given complete ACME config, when validated, then succeeds"
+    passing: true
+    type: unit
+  rust-tls-manual-missing-cert:
+    name: "test_tls_config_validate_manual_missing_cert"
+    file: "src/config.rs"
+    description: "Given manual mode without cert, when validated, then fails"
+    passing: true
+    type: unit
+  rust-tls-manual-missing-key:
+    name: "test_tls_config_validate_manual_missing_key"
+    file: "src/config.rs"
+    description: "Given manual mode without key, when validated, then fails"
+    passing: true
+    type: unit
+  rust-tls-manual-valid:
+    name: "test_tls_config_validate_manual_valid"
+    file: "src/config.rs"
+    description: "Given complete manual config, when validated, then succeeds"
+    passing: true
+    type: unit
+  rust-tls-is-enabled:
+    name: "test_tls_config_is_enabled"
+    file: "src/config.rs"
+    description: "Given TLS config, when checking is_enabled, then returns correct value"
+    passing: true
+    type: unit
+  manual-pr-graceful-shutdown:
+    name: "manual_test_pr_graceful_shutdown"
+    file: "manual"
+    description: "Manual: 1) Start September. 2) Send SIGTERM. 3) Verify logs show 'Shutting down gracefully'. 4) Verify process exits cleanly."
+    passing: true
+    type: manual
+  manual-pr-shutdown-timeout:
+    name: "manual_test_pr_shutdown_timeout"
+    file: "manual"
+    description: "Manual: Code review confirms http/shutdown.rs uses GRACEFUL_SHUTDOWN_TIMEOUT_SECS (30) in tokio::time::timeout when waiting for connections to drain."
+    passing: true
+    type: manual
+  manual-pr-sighup-reload:
+    name: "manual_test_pr_sighup_reload"
+    file: "manual"
+    description: "Manual: 1) Start September with manual TLS. 2) Replace cert files. 3) Send SIGHUP. 4) Verify logs show 'Reloading TLS certificates'. 5) Verify new cert is used."
+    passing: true
+    type: manual
+  manual-pr-json-log:
+    name: "manual_test_pr_json_log"
+    file: "manual"
+    description: "Manual: 1) Set log_format='json' in config. 2) Start September. 3) Verify logs are JSON objects with timestamp, level, message, and span fields."
+    passing: true
+    type: manual
+  manual-pr-text-log:
+    name: "manual_test_pr_text_log"
+    file: "manual"
+    description: "Manual: 1) Set log_format='text' in config. 2) Start September. 3) Verify logs are human-readable text with timestamps and colors."
+    passing: true
+    type: manual
+  manual-pr-log-format-config:
+    name: "manual_test_pr_log_format_config"
+    file: "manual"
+    description: "Manual: Code review confirms LogConfig has log_format field accepting 'json' or 'text'. CLI --log-format option also supported."
+    passing: true
+    type: manual
+  manual-pr-cli-config:
+    name: "manual_test_pr_cli_config"
+    file: "manual"
+    description: "Manual: 1) Run 'september --help'. 2) Verify -c/--config option documented. 3) Run 'september -c /path/to/config.toml'. 4) Verify config loaded from specified path."
+    passing: true
+    type: manual
+  manual-pr-cli-log-level:
+    name: "manual_test_pr_cli_log_level"
+    file: "manual"
+    description: "Manual: 1) Run 'september --help'. 2) Verify -l/--log-level option documented. 3) Run 'september -l debug'. 4) Verify debug logs appear."
+    passing: true
+    type: manual
+  manual-pr-cli-override-env:
+    name: "manual_test_pr_cli_override_env"
+    file: "manual"
+    description: "Manual: 1) Set RUST_LOG=warn. 2) Run 'september -l debug'. 3) Verify debug logs appear (CLI overrides env)."
+    passing: true
+    type: manual
+  manual-pr-deb-package:
+    name: "manual_test_pr_deb_package"
+    file: "manual"
+    description: "Manual: 1) Run release workflow. 2) Verify .deb artifact produced. 3) Install on Debian/Ubuntu. 4) Verify september binary in /usr/bin."
+    passing: true
+    type: manual
+  manual-pr-rpm-package:
+    name: "manual_test_pr_rpm_package"
+    file: "manual"
+    description: "Manual: 1) Run release workflow. 2) Verify .rpm artifact produced. 3) Install on RHEL/Fedora. 4) Verify september binary in /usr/bin."
+    passing: true
+    type: manual
+  manual-pr-systemd-unit:
+    name: "manual_test_pr_systemd_unit"
+    file: "manual"
+    description: "Manual: 1) Check dist/september.service exists. 2) Verify unit file has [Unit], [Service], [Install] sections. 3) After package install, verify file in /lib/systemd/system/."
+    passing: true
+    type: manual
+  manual-pr-man-page:
+    name: "manual_test_pr_man_page"
+    file: "manual"
+    description: "Manual: 1) Check dist/september.1 exists. 2) Run 'man ./dist/september.1'. 3) Verify man page displays with NAME, SYNOPSIS, OPTIONS sections."
+    passing: true
+    type: manual
