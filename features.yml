@@ -2,7 +2,7 @@
 # Generated from existing codebase analysis
 #
 # This file tracks features, requirements, and test coverage for the September project.
-# See docs/architecture.md for system overview.
+# See ARCHITECTURE.md for system overview.
 
 # =============================================================================
 # Feature 1: NNTP Worker Pool

@@ -1,4 +1,8 @@
-# September Architecture
+# Component Architecture
+
+This document provides detailed component diagrams and module reference for September's internal architecture.
+
+For a high-level system overview, see [ARCHITECTURE.md](../ARCHITECTURE.md) in the project root.
 
 September is a Rust web application providing a modern web interface to NNTP (Usenet/newsgroup) servers. Built with the Axum framework, it supports multiple NNTP servers with failover, a worker pool architecture with request coalescing, and multi-tier caching.
 
