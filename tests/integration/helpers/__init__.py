@@ -6,6 +6,7 @@ from .data import (
     NNTP_PASSWORD,
     NNTP_USERNAME,
     SELENIUM_URL,
+    SEPTEMBER_HOST_URL,
     SEPTEMBER_URL,
     TEST_GROUPS,
     TEST_USER_EMAIL,
@@ -33,11 +34,22 @@ from .waits import (
     wait_for_url_contains,
     wait_for_url_not_contains,
 )
+from .logs import (
+    LogAssertionError,
+    LogCapture,
+    assert_log_contains,
+    assert_log_field_equals,
+    assert_log_not_contains,
+    count_log_matches,
+    fetch_logs_containing,
+    wait_for_log_message,
+)
 
 __all__ = [
     # Data
     "SELENIUM_URL",
     "SEPTEMBER_URL",
+    "SEPTEMBER_HOST_URL",
     "DEX_URL",
     "TEST_USER_EMAIL",
     "TEST_USER_PASSWORD",
@@ -66,4 +78,13 @@ __all__ = [
     "wait_for_navigation_from",
     "url_matches_any",
     "element_has_non_empty_text",
+    # Log assertions
+    "LogAssertionError",
+    "LogCapture",
+    "assert_log_contains",
+    "assert_log_field_equals",
+    "assert_log_not_contains",
+    "count_log_matches",
+    "fetch_logs_containing",
+    "wait_for_log_message",
 ]

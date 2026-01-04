@@ -27,8 +27,11 @@ from selenium.common.exceptions import TimeoutException
 # Add the integration test directory to the path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
+import requests
+
 from helpers import (
     LOG_SERVICES,
+    LogCapture,
     POLL_FREQUENCY,
     SELENIUM_URL,
     SEPTEMBER_URL,
@@ -525,3 +528,64 @@ def visibility_timer(
 def september_url() -> str:
     """Return the base URL for the September application."""
     return SEPTEMBER_URL
+
+
+# =============================================================================
+# HTTP Client Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def http_client() -> Generator[requests.Session, None, None]:
+    """
+    Provide a requests.Session for direct HTTP calls to September.
+
+    Use this for testing HTTP headers, status codes, and other low-level
+    HTTP behavior that's hard to verify through Selenium.
+
+    The session is configured with no automatic redirect following for
+    cases where you need to inspect redirect responses.
+    """
+    session = requests.Session()
+    # Don't follow redirects by default - tests can override per-request
+    session.max_redirects = 0
+    yield session
+    session.close()
+
+
+@pytest.fixture
+def log_timestamp() -> datetime:
+    """
+    Provide a timestamp for log assertions.
+
+    Use this fixture to mark the start of an operation, then pass
+    the timestamp to log assertion helpers to only check logs after
+    that point.
+
+    Usage:
+        def test_something(log_timestamp, http_client):
+            # log_timestamp is captured at fixture creation
+            http_client.get(f"{SEPTEMBER_URL}/some/endpoint")
+            assert_log_contains("september", "expected message", log_timestamp)
+    """
+    return datetime.now(timezone.utc)
+
+
+@pytest.fixture
+def log_capture() -> Callable[[str], LogCapture]:
+    """
+    Factory fixture for LogCapture context managers.
+
+    Usage:
+        def test_something(log_capture, http_client):
+            with log_capture("september") as capture:
+                http_client.get(f"{SEPTEMBER_URL}/some/endpoint")
+
+            assert capture.contains("expected message")
+            assert capture.count("pattern") == 1
+    """
+
+    def _create(service: str) -> LogCapture:
+        return LogCapture(service)
+
+    return _create

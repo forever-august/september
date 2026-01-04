@@ -7,10 +7,14 @@ These tests verify:
 - Group filtering/search works
 - Navigation to groups works
 - Breadcrumb navigation in browse view
+- Health and privacy endpoints work
 """
+
+import requests
 
 from typing import Callable
 
+from helpers import SEPTEMBER_HOST_URL, SEPTEMBER_URL
 from pages import BrowsePage, HomePage
 
 
@@ -80,3 +84,30 @@ class TestStaticAssets:
         page = home_page()
         page.search("test")
         assert page.get_search_value() == "test"
+
+
+class TestEndpoints:
+    """Tests for miscellaneous HTTP endpoints."""
+
+    def test_health_endpoint(self):
+        """
+        Health endpoint should return 200 OK with 'ok' body.
+
+        This verifies the health check endpoint is accessible and working.
+        Used by container orchestration for liveness probes.
+        """
+        response = requests.get(f"{SEPTEMBER_HOST_URL}/health")
+        assert response.status_code == 200
+        assert response.text.strip() == "ok"
+
+    def test_privacy_page_loads(self, home_page: Callable[[], HomePage]):
+        """
+        Privacy page should load and display content.
+
+        The privacy page provides legal information about data handling.
+        """
+        page = home_page()
+        # Use Docker-internal URL for Selenium (runs in Docker)
+        page.driver.get(f"{SEPTEMBER_URL}/privacy")
+        # Verify page loads with content
+        assert page.has_body()

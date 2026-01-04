@@ -128,3 +128,138 @@ class TestSessionPersistence:
         browser.get(f"{SEPTEMBER_URL}/g/test.general")
         body = browser.find_element(By.TAG_NAME, "body")
         assert body is not None
+
+
+class TestCookieSecurity:
+    """Tests for cookie security flags."""
+
+    @pytest.mark.auth
+    def test_session_cookie_httponly(self, authenticated_browser: WebDriver):
+        """
+        Session cookie should have HttpOnly flag to prevent XSS attacks.
+
+        Replaces: manual-sm-httponly-cookies
+        """
+        browser = authenticated_browser
+
+        # Get all cookies
+        cookies = browser.get_cookies()
+
+        # Find the session cookie (typically named 'session' or similar)
+        session_cookies = [c for c in cookies if "session" in c.get("name", "").lower()]
+
+        # If no explicit session cookie, check all cookies
+        if not session_cookies:
+            session_cookies = cookies
+
+        # At least one cookie should have HttpOnly flag
+        httponly_cookies = [c for c in session_cookies if c.get("httpOnly", False)]
+
+        assert len(httponly_cookies) > 0, (
+            f"Expected at least one cookie with HttpOnly flag. "
+            f"Cookies found: {[c.get('name') for c in session_cookies]}"
+        )
+
+    @pytest.mark.auth
+    def test_session_cookie_samesite(self, authenticated_browser: WebDriver):
+        """
+        Session cookie should have SameSite flag for CSRF protection.
+
+        Replaces: manual-sm-httponly-cookies (combined test)
+        """
+        browser = authenticated_browser
+
+        cookies = browser.get_cookies()
+
+        # Find session-related cookies
+        session_cookies = [c for c in cookies if "session" in c.get("name", "").lower()]
+
+        if not session_cookies:
+            session_cookies = cookies
+
+        # Check for SameSite attribute
+        # Note: Selenium may report sameSite as 'Lax', 'Strict', or 'None'
+        samesite_cookies = [
+            c
+            for c in session_cookies
+            if c.get("sameSite", "").lower() in ("lax", "strict")
+        ]
+
+        assert len(samesite_cookies) > 0 or len(session_cookies) == 0, (
+            f"Expected session cookies to have SameSite=Lax or Strict. "
+            f"Cookies: {[(c.get('name'), c.get('sameSite')) for c in session_cookies]}"
+        )
+
+
+class TestPKCE:
+    """Tests for PKCE (Proof Key for Code Exchange) in OAuth flow."""
+
+    def test_oauth_redirect_includes_pkce_parameters(self):
+        """
+        OAuth redirect URL should include PKCE code_challenge parameters.
+
+        PKCE prevents authorization code interception attacks.
+        Replaces: manual-oidc-pkce
+        """
+        import re
+        from urllib.parse import parse_qs, urlparse
+
+        import requests
+
+        from helpers import SEPTEMBER_HOST_URL
+
+        # Make a direct HTTP request to capture the redirect chain
+        # We need to follow the September redirects but stop at the external Dex URL
+        with requests.Session() as session:
+            # First request: /auth/login -> /auth/login/{provider}
+            response = session.get(
+                f"{SEPTEMBER_HOST_URL}/auth/login",
+                allow_redirects=False,
+            )
+            assert response.status_code == 303, (
+                f"Expected 303, got {response.status_code}"
+            )
+
+            # Second request: /auth/login/{provider} -> external OIDC URL with PKCE params
+            provider_url = response.headers.get("Location")
+            assert provider_url, "Missing Location header in redirect"
+
+            # If it's a relative URL, make it absolute
+            if provider_url.startswith("/"):
+                provider_url = f"{SEPTEMBER_HOST_URL}{provider_url}"
+
+            response = session.get(provider_url, allow_redirects=False)
+            assert response.status_code == 303, (
+                f"Expected 303, got {response.status_code}"
+            )
+
+            # This redirect should point to the OIDC provider with PKCE parameters
+            oidc_url = response.headers.get("Location")
+            assert oidc_url, "Missing Location header in OIDC redirect"
+
+        # Parse the OIDC authorization URL
+        parsed = urlparse(oidc_url)
+        query_params = parse_qs(parsed.query)
+
+        # Verify PKCE parameters are present
+        assert "code_challenge" in query_params, (
+            f"OAuth redirect should include code_challenge parameter. URL: {oidc_url}"
+        )
+
+        assert "code_challenge_method" in query_params, (
+            f"OAuth redirect should include code_challenge_method parameter. "
+            f"URL: {oidc_url}"
+        )
+
+        # code_challenge_method should be S256 (SHA-256)
+        method = query_params["code_challenge_method"][0]
+        assert method == "S256", f"code_challenge_method should be S256, got: {method}"
+
+        # code_challenge should be a base64url-encoded string (43 chars for SHA-256)
+        challenge = query_params["code_challenge"][0]
+        assert len(challenge) >= 43, f"code_challenge seems too short: {challenge}"
+
+        # Verify it's base64url format (alphanumeric, -, _)
+        assert re.match(r"^[A-Za-z0-9_-]+$", challenge), (
+            f"code_challenge should be base64url encoded: {challenge}"
+        )
