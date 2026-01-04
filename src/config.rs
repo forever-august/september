@@ -1182,6 +1182,14 @@ mod tests {
         assert!(err_msg.contains("alphanumeric"));
     }
 
+    #[test]
+    fn test_oidc_provider_userinfo_sub_field_default() {
+        // The make_provider helper sets userinfo_sub_field to "sub"
+        // This verifies the default value in OidcProviderConfig
+        let provider = make_provider("test");
+        assert_eq!(provider.userinfo_sub_field, "sub");
+    }
+
     // =============================================================================
     // NntpServerConfig tests
     // =============================================================================
@@ -1261,6 +1269,66 @@ mod tests {
         assert!(!config.requires_tls_for_credentials());
     }
 
+    #[test]
+    fn test_nntp_server_config_request_timeout_uses_override() {
+        let global = NntpSettings {
+            timeout_seconds: 30,
+            request_timeout_seconds: 60,
+            defaults: NntpDefaults {
+                threads_per_page: 25,
+                articles_per_page: 20,
+                max_articles_per_group: 500,
+            },
+            legacy_server: None,
+            legacy_port: None,
+            legacy_worker_count: None,
+            legacy_username: None,
+            legacy_password: None,
+        };
+        let config = NntpServerConfig {
+            name: "test".to_string(),
+            host: "news.example.com".to_string(),
+            port: 119,
+            timeout_seconds: None,
+            request_timeout_seconds: Some(120), // Override
+            worker_count: None,
+            username: None,
+            password: None,
+            allow_insecure_auth: false,
+        };
+        assert_eq!(config.request_timeout_seconds(&global), 120);
+    }
+
+    #[test]
+    fn test_nntp_server_config_request_timeout_falls_back_to_global() {
+        let global = NntpSettings {
+            timeout_seconds: 30,
+            request_timeout_seconds: 60,
+            defaults: NntpDefaults {
+                threads_per_page: 25,
+                articles_per_page: 20,
+                max_articles_per_group: 500,
+            },
+            legacy_server: None,
+            legacy_port: None,
+            legacy_worker_count: None,
+            legacy_username: None,
+            legacy_password: None,
+        };
+        let config = NntpServerConfig {
+            name: "test".to_string(),
+            host: "news.example.com".to_string(),
+            port: 119,
+            timeout_seconds: None,
+            request_timeout_seconds: None, // No override
+            worker_count: None,
+            username: None,
+            password: None,
+            allow_insecure_auth: false,
+        };
+        assert_eq!(config.request_timeout_seconds(&global), 60);
+    }
+
     // =============================================================================
     // Cache-Control header tests
     // =============================================================================
@@ -1310,5 +1378,75 @@ mod tests {
     #[test]
     fn test_cache_control_error() {
         assert!(CACHE_CONTROL_ERROR.contains("max-age=5"));
+    }
+
+    // =============================================================================
+    // CacheConfig default tests
+    // =============================================================================
+
+    #[test]
+    fn test_cache_config_default_article_ttl() {
+        let config = CacheConfig::default();
+        assert_eq!(config.article_ttl_seconds, 86400); // 24 hours
+    }
+
+    #[test]
+    fn test_cache_config_default_threads_ttl() {
+        let config = CacheConfig::default();
+        assert_eq!(config.threads_ttl_seconds, 1800); // 30 minutes
+    }
+
+    #[test]
+    fn test_cache_config_default_groups_ttl() {
+        let config = CacheConfig::default();
+        assert_eq!(config.groups_ttl_seconds, 3600); // 1 hour
+    }
+
+    #[test]
+    fn test_cache_config_default_max_articles() {
+        let config = CacheConfig::default();
+        assert_eq!(config.max_articles, 10000);
+    }
+
+    #[test]
+    fn test_cache_config_default_max_thread_lists() {
+        let config = CacheConfig::default();
+        assert_eq!(config.max_thread_lists, 100);
+    }
+
+    #[test]
+    fn test_cache_config_default_max_group_stats() {
+        let config = CacheConfig::default();
+        assert_eq!(config.max_group_stats, 1000);
+    }
+
+    // =============================================================================
+    // NNTP constant tests
+    // =============================================================================
+
+    #[test]
+    fn test_negative_cache_ttl_is_30_seconds() {
+        assert_eq!(NNTP_NEGATIVE_CACHE_TTL_SECS, 30);
+    }
+
+    #[test]
+    fn test_incremental_debounce_is_1_second() {
+        assert_eq!(INCREMENTAL_DEBOUNCE_MS, 1000);
+    }
+
+    // =============================================================================
+    // ThemeConfig tests
+    // =============================================================================
+
+    #[test]
+    fn test_theme_config_default_name() {
+        let config = ThemeConfig::default();
+        assert_eq!(config.name, "default");
+    }
+
+    #[test]
+    fn test_theme_config_default_themes_dir() {
+        let config = ThemeConfig::default();
+        assert_eq!(config.themes_dir, "/usr/share/september/themes");
     }
 }

@@ -1205,3 +1205,71 @@ pub fn compute_preview(body: &str) -> (String, bool) {
 
     (result, has_more)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn test_compute_timeago_just_now() {
+        let now = Utc::now();
+        let date = now.to_rfc2822();
+        assert_eq!(compute_timeago(&date), "just now");
+    }
+
+    #[test]
+    fn test_compute_timeago_minutes() {
+        let now = Utc::now();
+        let date = (now - Duration::minutes(5)).to_rfc2822();
+        assert_eq!(compute_timeago(&date), "5 minutes ago");
+    }
+
+    #[test]
+    fn test_compute_timeago_one_minute() {
+        let now = Utc::now();
+        let date = (now - Duration::minutes(1)).to_rfc2822();
+        assert_eq!(compute_timeago(&date), "1 minute ago");
+    }
+
+    #[test]
+    fn test_compute_timeago_hours() {
+        let now = Utc::now();
+        let date = (now - Duration::hours(3)).to_rfc2822();
+        assert_eq!(compute_timeago(&date), "3 hours ago");
+    }
+
+    #[test]
+    fn test_compute_timeago_one_hour() {
+        let now = Utc::now();
+        let date = (now - Duration::hours(1)).to_rfc2822();
+        assert_eq!(compute_timeago(&date), "1 hour ago");
+    }
+
+    #[test]
+    fn test_compute_timeago_days() {
+        let now = Utc::now();
+        let date = (now - Duration::days(5)).to_rfc2822();
+        assert_eq!(compute_timeago(&date), "5 days ago");
+    }
+
+    #[test]
+    fn test_compute_timeago_one_day() {
+        let now = Utc::now();
+        let date = (now - Duration::days(1)).to_rfc2822();
+        assert_eq!(compute_timeago(&date), "1 day ago");
+    }
+
+    #[test]
+    fn test_compute_timeago_invalid_date_returns_original() {
+        let invalid = "not a date";
+        assert_eq!(compute_timeago(invalid), "not a date");
+    }
+
+    #[test]
+    fn test_compute_timeago_future_date() {
+        let now = Utc::now();
+        let date = (now + Duration::hours(1)).to_rfc2822();
+        assert_eq!(compute_timeago(&date), "in the future");
+    }
+}

@@ -1001,3 +1001,117 @@ impl NntpWorker {
         Ok(build_threads_from_hdr(articles))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =============================================================================
+    // ServerCapabilities tests
+    // =============================================================================
+
+    #[test]
+    fn test_thread_fetch_method_prefers_over() {
+        let caps = ServerCapabilities {
+            over_supported: true,
+            hdr_supported: true,
+            references_in_overview: true,
+            ..Default::default()
+        };
+        assert_eq!(caps.thread_fetch_method(), ThreadFetchMethod::Over);
+    }
+
+    #[test]
+    fn test_thread_fetch_method_over_without_references() {
+        // Even without confirmed References, OVER is still preferred
+        let caps = ServerCapabilities {
+            over_supported: true,
+            hdr_supported: true,
+            references_in_overview: false,
+            ..Default::default()
+        };
+        assert_eq!(caps.thread_fetch_method(), ThreadFetchMethod::Over);
+    }
+
+    #[test]
+    fn test_thread_fetch_method_hdr_fallback() {
+        // When OVER is not available, fall back to HDR
+        let caps = ServerCapabilities {
+            over_supported: false,
+            hdr_supported: true,
+            ..Default::default()
+        };
+        assert_eq!(caps.thread_fetch_method(), ThreadFetchMethod::Hdr);
+    }
+
+    #[test]
+    fn test_thread_fetch_method_head_fallback() {
+        // When neither OVER nor HDR is available, fall back to HEAD
+        let caps = ServerCapabilities {
+            over_supported: false,
+            hdr_supported: false,
+            ..Default::default()
+        };
+        assert_eq!(caps.thread_fetch_method(), ThreadFetchMethod::Head);
+    }
+
+    #[test]
+    fn test_server_capabilities_from_capabilities_parses_hdr() {
+        let caps = ServerCapabilities::from_capabilities(&["HDR".to_string()]);
+        assert!(caps.hdr_supported);
+        assert!(!caps.over_supported);
+    }
+
+    #[test]
+    fn test_server_capabilities_from_capabilities_parses_over() {
+        let caps = ServerCapabilities::from_capabilities(&["OVER".to_string()]);
+        assert!(caps.over_supported);
+        assert!(!caps.hdr_supported);
+    }
+
+    #[test]
+    fn test_server_capabilities_from_capabilities_parses_post() {
+        let caps = ServerCapabilities::from_capabilities(&["POST".to_string()]);
+        assert!(caps.post_supported);
+    }
+
+    #[test]
+    fn test_server_capabilities_from_capabilities_parses_list_variants() {
+        let caps =
+            ServerCapabilities::from_capabilities(&["LIST ACTIVE NEWSGROUPS OVERVIEW.FMT".to_string()]);
+        assert!(caps.list_variants.contains("ACTIVE"));
+        assert!(caps.list_variants.contains("NEWSGROUPS"));
+        assert!(caps.list_variants.contains("OVERVIEW.FMT"));
+    }
+
+    #[test]
+    fn test_server_capabilities_can_post_requires_both() {
+        let mut caps = ServerCapabilities::default();
+
+        // Neither set
+        assert!(!caps.can_post());
+
+        // Only greeting allows
+        caps.greeting_allows_post = true;
+        assert!(!caps.can_post());
+
+        // Only POST in capabilities
+        caps.greeting_allows_post = false;
+        caps.post_supported = true;
+        assert!(!caps.can_post());
+
+        // Both set
+        caps.greeting_allows_post = true;
+        assert!(caps.can_post());
+    }
+
+    // =============================================================================
+    // Priority aging constant test
+    // =============================================================================
+
+    #[test]
+    fn test_priority_aging_threshold_is_10_seconds() {
+        // Verify the aging threshold constant is 10 seconds as documented
+        assert_eq!(NNTP_PRIORITY_AGING_SECS, 10);
+    }
+}
